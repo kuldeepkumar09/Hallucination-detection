@@ -1,0 +1,260 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-gray-950 text-gray-100 font-sans antialiased;
+  }
+}
+
+@layer components {
+  /* ── Core cards & buttons ───────────────────────────────────────── */
+  .card {
+    @apply bg-gray-900 border border-gray-800 rounded-xl p-4;
+  }
+  .card-accent {
+    @apply bg-gradient-to-br from-gray-900 via-gray-900 to-slate-900/60 border border-gray-800 rounded-xl p-4;
+  }
+  .btn-primary {
+    @apply bg-sky-600 hover:bg-sky-500 active:bg-sky-700 text-white font-semibold px-4 py-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-secondary {
+    @apply bg-gray-800 hover:bg-gray-700 text-gray-200 font-medium px-4 py-2 rounded-lg transition-colors;
+  }
+  .btn-danger {
+    @apply bg-red-900 hover:bg-red-800 text-red-200 font-medium px-3 py-1.5 rounded-lg transition-colors text-sm;
+  }
+  .btn-export {
+    @apply flex items-center gap-1.5 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-medium px-3 py-1.5 rounded-lg transition-colors;
+  }
+
+  /* ── Status badges ──────────────────────────────────────────────── */
+  .badge-verified {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-900 text-emerald-300;
+  }
+  .badge-contradicted {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-red-900 text-red-300;
+  }
+  .badge-flagged {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-yellow-900 text-yellow-300;
+  }
+  .badge-unverifiable {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-700 text-gray-300;
+  }
+  .action-block {
+    @apply bg-red-950 text-red-400 font-bold px-2 py-0.5 rounded text-xs;
+  }
+  .action-flag {
+    @apply bg-yellow-950 text-yellow-400 font-semibold px-2 py-0.5 rounded text-xs;
+  }
+  .action-annotate {
+    @apply bg-sky-950 text-sky-400 font-medium px-2 py-0.5 rounded text-xs;
+  }
+  .action-pass {
+    @apply bg-gray-800 text-gray-400 px-2 py-0.5 rounded text-xs;
+  }
+
+  /* ── Layout ─────────────────────────────────────────────────────── */
+  .page-bg {
+    @apply bg-gradient-to-br from-gray-950 via-gray-950 to-slate-900;
+  }
+
+  /* ── KPI cards ──────────────────────────────────────────────────── */
+  .kpi-card {
+    @apply card flex flex-col gap-1;
+  }
+  .kpi-value {
+    @apply text-2xl font-bold font-mono;
+  }
+  .kpi-label {
+    @apply text-xs text-gray-500 uppercase tracking-wider;
+  }
+  .kpi-trend-up {
+    @apply text-emerald-400 text-xs;
+  }
+  .kpi-trend-down {
+    @apply text-red-400 text-xs;
+  }
+
+  /* ── Status dot ─────────────────────────────────────────────────── */
+  .status-dot {
+    @apply inline-block w-2 h-2 rounded-full flex-shrink-0;
+  }
+  .status-dot-online {
+    @apply bg-emerald-500;
+    box-shadow: 0 0 6px 2px rgba(52, 211, 153, 0.45);
+    animation: pulse-dot 2s ease-in-out infinite;
+  }
+  .status-dot-offline {
+    @apply bg-red-500;
+  }
+  .status-dot-connecting {
+    @apply bg-yellow-500;
+    animation: pulse-dot 1s ease-in-out infinite;
+  }
+
+  /* ── Toast system ───────────────────────────────────────────────── */
+  .toast-container {
+    @apply fixed bottom-5 right-5 z-50 flex flex-col gap-2 items-end pointer-events-none;
+  }
+  .toast {
+    @apply flex items-center gap-2 px-4 py-3 rounded-xl text-sm font-medium shadow-2xl min-w-[260px] max-w-sm pointer-events-auto;
+    animation: toast-in 0.3s ease;
+  }
+  .toast-success {
+    @apply bg-emerald-900 border border-emerald-700 text-emerald-100;
+  }
+  .toast-error {
+    @apply bg-red-900 border border-red-700 text-red-100;
+  }
+  .toast-info {
+    @apply bg-sky-900 border border-sky-700 text-sky-100;
+  }
+  .toast-icon {
+    @apply font-bold text-base flex-shrink-0;
+  }
+  .toast-message {
+    @apply flex-1 leading-snug;
+  }
+  .toast-close {
+    @apply opacity-60 hover:opacity-100 bg-transparent border-0 cursor-pointer text-lg leading-none ml-1 p-0 flex-shrink-0;
+    color: inherit;
+  }
+
+  /* ── Skeleton loader ────────────────────────────────────────────── */
+  .skeleton {
+    @apply bg-gray-800 rounded;
+    animation: skeleton-pulse 1.8s ease-in-out infinite;
+  }
+
+  /* ── Evidence drawer ────────────────────────────────────────────── */
+  .evidence-drawer {
+    @apply bg-gray-900/80 border-b border-gray-800 px-4 py-4;
+  }
+  .evidence-drawer-inner {
+    @apply space-y-3;
+  }
+
+  /* ── Copy button ────────────────────────────────────────────────── */
+  .copy-btn {
+    @apply text-xs text-sky-500 hover:text-sky-400 cursor-pointer bg-transparent border-0 p-0 underline-offset-2 hover:underline;
+  }
+
+  /* ── Source chip ────────────────────────────────────────────────── */
+  .source-chip {
+    @apply text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded font-mono truncate max-w-[220px] block;
+  }
+
+  /* ── Filter bar ─────────────────────────────────────────────────── */
+  .filter-bar {
+    @apply flex flex-wrap items-center gap-2 bg-gray-900 border border-gray-800 rounded-xl p-3;
+  }
+  .filter-chip {
+    @apply text-xs px-2.5 py-1 rounded-full font-medium cursor-pointer transition-colors select-none;
+  }
+  .filter-chip-active {
+    @apply bg-sky-800 text-sky-200;
+  }
+  .filter-chip-inactive {
+    @apply bg-gray-800 text-gray-400 hover:bg-gray-700;
+  }
+
+  /* ── Confirmation modal ─────────────────────────────────────────── */
+  .modal-overlay {
+    @apply fixed inset-0 bg-black/60 z-40 flex items-center justify-center;
+    backdrop-filter: blur(4px);
+  }
+  .modal-box {
+    @apply bg-gray-900 border border-gray-700 rounded-xl p-6 max-w-sm w-full mx-4 shadow-2xl;
+    animation: modal-in 0.2s ease;
+  }
+
+  /* ── Chunk bar ──────────────────────────────────────────────────── */
+  .chunk-bar-track {
+    @apply w-full h-1.5 bg-gray-800 rounded-full overflow-hidden;
+  }
+  .chunk-bar-fill {
+    @apply h-full bg-sky-700 rounded-full transition-all duration-500;
+  }
+
+  /* ── Gauge ──────────────────────────────────────────────────────── */
+  .gauge-wrapper {
+    @apply flex items-center justify-center;
+  }
+
+  /* ── Wiki form ──────────────────────────────────────────────────── */
+  .wiki-form {
+    @apply flex gap-2;
+  }
+
+  /* ── Page entry ─────────────────────────────────────────────────── */
+  .page-enter {
+    animation: page-enter 0.22s ease;
+  }
+}
+
+/* ── Keyframes ───────────────────────────────────────────────────────── */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(24px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@keyframes slide-in-row {
+  from { opacity: 0; transform: translateX(-10px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes modal-in {
+  from { opacity: 0; transform: scale(0.95); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+@keyframes page-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes gauge-draw {
+  from { stroke-dashoffset: 200; }
+  to   { stroke-dashoffset: 0; }
+}
+
+/* Claim row animation */
+.claim-row {
+  opacity: 0;
+  animation: slide-in-row 0.3s ease forwards;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #030712; }
+::-webkit-scrollbar-thumb { background: #374151; border-radius: 9999px; }
+::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+
+/* Spinner */
+.spinner {
+  border: 2px solid rgba(255,255,255,0.1);
+  border-top-color: #38bdf8;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Audit row highlight */
+.audit-row-blocked { @apply bg-red-950/30; }
+.audit-row-flagged  { @apply bg-yellow-950/20; }
+.audit-row-clean    { @apply bg-emerald-950/10; }
+
+/* Recharts overrides */
+.recharts-tooltip-cursor { fill: rgba(255,255,255,0.03); }

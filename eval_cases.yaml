@@ -1,0 +1,122 @@
+# Hallucination Detection Evaluation Cases
+# Run with: python evaluate.py --cases eval_cases.yaml
+#
+# expected_hallucinations: substrings of claims that ARE hallucinations
+# expected_actions: acceptable pipeline actions (pass, annotate, flag, block)
+
+cases:
+  # ── Medical ─────────────────────────────────────────────────────────────
+  - id: "medical_ibuprofen_danger"
+    text: "Ibuprofen is safe to use throughout all trimesters of pregnancy and is often recommended for pain management during labour."
+    expected_hallucinations:
+      - "Ibuprofen is safe to use throughout all trimesters"
+      - "recommended for pain management during labour"
+    expected_actions: ["block", "flag"]
+
+  - id: "medical_diabetes_stat_wrong"
+    text: "According to the WHO, diabetes currently affects approximately 500 million people worldwide."
+    expected_hallucinations:
+      - "500 million people"
+    expected_actions: ["flag", "block"]
+
+  - id: "medical_penicillin_correct"
+    text: "Penicillin was discovered by Alexander Fleming in 1928."
+    expected_hallucinations: []
+    expected_actions: ["pass", "annotate"]
+
+  - id: "medical_covid_vaccine_correct"
+    text: "The first COVID-19 vaccine authorised for emergency use was the Pfizer-BioNTech vaccine in December 2020."
+    expected_hallucinations: []
+    expected_actions: ["pass", "annotate"]
+
+  # ── Legal / GDPR ─────────────────────────────────────────────────────────
+  - id: "legal_gdpr_date_wrong"
+    text: "The EU GDPR came into force on 1 June 2019."
+    expected_hallucinations:
+      - "came into force on 1 June 2019"
+    expected_actions: ["flag", "block"]
+
+  - id: "legal_gdpr_breach_wrong"
+    text: "Under GDPR, data breaches must be reported to supervisory authorities within 24 hours."
+    expected_hallucinations:
+      - "within 24 hours"
+    expected_actions: ["flag", "block"]
+
+  - id: "legal_gdpr_fine_wrong"
+    text: "The maximum GDPR fine is €10 million or 2% of global annual turnover."
+    expected_hallucinations:
+      - "€10 million or 2%"
+    expected_actions: ["flag", "block"]
+
+  - id: "legal_gdpr_fine_correct"
+    text: "The maximum GDPR fine is €20 million or 4% of global annual turnover, whichever is higher."
+    expected_hallucinations: []
+    expected_actions: ["pass", "annotate"]
+
+  # ── Science / Physics ────────────────────────────────────────────────────
+  - id: "science_einstein_birthplace_wrong"
+    text: "Albert Einstein was born in Berlin, Germany."
+    expected_hallucinations:
+      - "born in Berlin"
+    expected_actions: ["flag", "block"]
+
+  - id: "science_relativity_date_wrong"
+    text: "Einstein published his Special Theory of Relativity in 1912."
+    expected_hallucinations:
+      - "published his Special Theory of Relativity in 1912"
+    expected_actions: ["flag", "block"]
+
+  - id: "science_light_speed_wrong"
+    text: "The speed of light is approximately 250,000 kilometres per second."
+    expected_hallucinations:
+      - "250,000 kilometres per second"
+    expected_actions: ["flag", "block"]
+
+  - id: "science_einstein_birthdate_correct"
+    text: "Albert Einstein was born on 14 March 1879."
+    expected_hallucinations: []
+    expected_actions: ["pass", "annotate"]
+
+  - id: "science_nobel_wrong"
+    text: "Einstein won the Nobel Prize in Physics for his Theory of Relativity."
+    expected_hallucinations:
+      - "Theory of Relativity"
+    expected_actions: ["flag", "block"]
+
+  # ── Geography ────────────────────────────────────────────────────────────
+  - id: "geo_paris_correct"
+    text: "Paris is the capital and largest city of France."
+    expected_hallucinations: []
+    expected_actions: ["pass", "annotate"]
+
+  - id: "geo_population_correct"
+    text: "The world population as of 2024 is approximately 8.1 billion people."
+    expected_hallucinations: []
+    expected_actions: ["pass", "annotate"]
+
+  # ── Technology ───────────────────────────────────────────────────────────
+  - id: "tech_www_correct"
+    text: "The World Wide Web was invented by Tim Berners-Lee in 1989."
+    expected_hallucinations: []
+    expected_actions: ["pass", "annotate"]
+
+  - id: "tech_iphone_correct"
+    text: "The first iPhone was released by Apple on 29 June 2007."
+    expected_hallucinations: []
+    expected_actions: ["pass", "annotate"]
+
+  - id: "tech_google_correct"
+    text: "Google was founded by Larry Page and Sergey Brin in 1998."
+    expected_hallucinations: []
+    expected_actions: ["pass", "annotate"]
+
+  # ── Mixed (realistic LLM output) ────────────────────────────────────────
+  - id: "mixed_medical_multiple_errors"
+    text: >
+      Diabetes affects approximately 500 million people worldwide according to WHO.
+      Ibuprofen is safe to use in all trimesters of pregnancy.
+      Penicillin was discovered by Alexander Fleming in 1928.
+    expected_hallucinations:
+      - "500 million"
+      - "safe to use in all trimesters"
+    expected_actions: ["flag", "block"]
