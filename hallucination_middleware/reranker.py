@@ -10,6 +10,7 @@ the input documents unchanged with a one-time warning log.
 """
 import asyncio
 import logging
+import threading
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ class CrossEncoderReranker:
         self._model_name = model_name
         self._model = None          # lazy-loaded
         self._available: Optional[bool] = None  # None = not yet checked
+        self._lock = threading.Lock()           # prevent concurrent load race
 
     # ------------------------------------------------------------------
     # Public API
@@ -91,28 +93,38 @@ class CrossEncoderReranker:
     def _load_model(self):
         global _UNAVAILABLE_WARNED
 
+        # Fast path — no lock needed for reads after init
         if self._available is False:
             return None
         if self._model is not None:
             return self._model
 
-        try:
-            from sentence_transformers import CrossEncoder  # noqa: PLC0415
-            logger.info("Loading cross-encoder model: %s …", self._model_name)
-            self._model = CrossEncoder(self._model_name)
-            self._available = True
-            logger.info("Cross-encoder ready")
-            return self._model
-        except ImportError:
-            if not _UNAVAILABLE_WARNED:
-                logger.warning(
-                    "sentence-transformers not installed — re-ranking disabled. "
-                    "Install with:  pip install sentence-transformers"
-                )
-                _UNAVAILABLE_WARNED = True
-            self._available = False
-            return None
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Failed to load cross-encoder (%s): %s", self._model_name, exc)
-            self._available = False
-            return None
+        # Slow path — acquire lock so only one thread loads the model
+        with self._lock:
+            if self._available is False:
+                return None
+            if self._model is not None:
+                return self._model
+
+            # Load inside the lock so other threads wait here
+            try:
+                import torch  # noqa: PLC0415
+                from sentence_transformers import CrossEncoder  # noqa: PLC0415
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                logger.info("Loading cross-encoder model: %s on %s …", self._model_name, device)
+                self._model = CrossEncoder(self._model_name, device=device)
+                self._available = True
+                logger.info("Cross-encoder ready on %s", device)
+            except ImportError:
+                if not _UNAVAILABLE_WARNED:
+                    logger.warning(
+                        "sentence-transformers not installed — re-ranking disabled. "
+                        "Install with:  pip install sentence-transformers"
+                    )
+                    _UNAVAILABLE_WARNED = True
+                self._available = False
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to load cross-encoder (%s): %s", self._model_name, exc)
+                self._available = False
+
+        return self._model

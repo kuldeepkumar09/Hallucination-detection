@@ -62,13 +62,13 @@
 
   /* ── KPI cards ──────────────────────────────────────────────────── */
   .kpi-card {
-    @apply card flex flex-col gap-1;
+    @apply card flex flex-col gap-2 py-5;
   }
   .kpi-value {
-    @apply text-2xl font-bold font-mono;
+    @apply text-3xl font-bold font-mono;
   }
   .kpi-label {
-    @apply text-xs text-gray-500 uppercase tracking-wider;
+    @apply text-sm text-gray-500 uppercase tracking-wider;
   }
   .kpi-trend-up {
     @apply text-emerald-400 text-xs;

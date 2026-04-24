@@ -10,19 +10,44 @@ Upgrades over v1:
   • Chunk size / overlap now configurable via Settings
 """
 import asyncio
+import concurrent.futures
 import hashlib
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import chromadb
 from chromadb.config import Settings as ChromaSettings
+from chromadb.utils import embedding_functions as _chromadb_ef
 
 from .config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# GPU-aware embedding function (auto-detects CUDA, falls back to CPU)
+# ---------------------------------------------------------------------------
+
+def _build_embedding_fn():
+    try:
+        import torch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    except ImportError:
+        device = "cpu"
+    logger.info("[KB] Embedding device: %s", device)
+    try:
+        return _chromadb_ef.SentenceTransformerEmbeddingFunction(
+            model_name="all-MiniLM-L6-v2",
+            device=device,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[KB] SentenceTransformer embedding unavailable (%s), using ChromaDB default", exc)
+        return None
+
+_EMBED_FN = _build_embedding_fn()
 
 
 # ---------------------------------------------------------------------------
@@ -33,11 +58,12 @@ def _try_spacy_sentences(text: str) -> Optional[List[str]]:
     """Return list of sentences from spaCy, or None if spaCy unavailable."""
     try:
         import spacy  # noqa: PLC0415
+        model_name = get_settings().spacy_language_model
         try:
-            nlp = spacy.load("en_core_web_sm", disable=["ner", "parser", "tagger"])
+            nlp = spacy.load(model_name, disable=["ner", "parser", "tagger"])
             nlp.enable_pipe("senter")
         except OSError:
-            nlp = spacy.load("en_core_web_sm")
+            nlp = spacy.load(model_name)
         doc = nlp(text[:100_000])   # cap for safety
         return [sent.text.strip() for sent in doc.sents if sent.text.strip()]
     except Exception:  # noqa: BLE001
@@ -132,15 +158,29 @@ class KnowledgeBase:
             path=persist_dir,
             settings=ChromaSettings(anonymized_telemetry=False),
         )
+        # Do not pass embedding_function to get_or_create_collection — ChromaDB
+        # enforces that the function matches what was used when the collection was
+        # originally created. Existing collections use ChromaDB's built-in default.
+        # _EMBED_FN (GPU SentenceTransformer) is used for the semantic cache only.
         self._col = self._chroma.get_or_create_collection(
             name=self._settings.kb_collection_name,
-            metadata={"hnsw:space": "cosine"},
+            metadata={
+                "hnsw:space": "cosine",
+                "embedding_model": "all-MiniLM-L6-v2",
+                "embedding_model_version": "1",
+            },
         )
 
         # BM25 in-memory index (rebuilt from ChromaDB on startup)
         self._bm25 = None
         self._bm25_docs: List[Dict] = []   # [{id, source, excerpt}]
-        self._rebuild_bm25()
+        self._last_updated_ts = time.time()
+        self._doc_list_cache: Optional[List[Dict]] = None  # invalidated on ingest/delete
+        # Single-threaded executor so BM25 rebuilds never pile up
+        self._bm25_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="bm25"
+        )
+        self._rebuild_bm25()  # initial build is synchronous (startup only)
 
         logger.info(
             "Knowledge base ready — %d chunks, BM25=%s",
@@ -158,9 +198,20 @@ class KnowledgeBase:
         source: str,
         doc_id: Optional[str] = None,
     ) -> int:
+        # ── Input validation ──────────────────────────────────────────────
+        if not source or not source.strip():
+            raise ValueError("source must be a non-empty string")
+        source = source.strip()
         text = text.strip()
         if not text:
             return 0
+        if len(text) < 20:
+            logger.warning("Skipping ingest: text too short (%d chars, source=%s)", len(text), source)
+            return 0
+        # Reject binary/non-text: >10% non-printable characters
+        non_printable = sum(1 for c in text[:500] if ord(c) < 32 and c not in "\n\r\t")
+        if non_printable / min(len(text), 500) > 0.10:
+            raise ValueError(f"Text appears to contain binary content (source={source})")
 
         doc_id = doc_id or hashlib.md5(text[:256].encode()).hexdigest()[:12]
         chunks = _chunk_text(
@@ -183,7 +234,9 @@ class KnowledgeBase:
                 metadatas=metadatas[i : i + batch],
             )
 
-        self._rebuild_bm25()
+        self._bm25_executor.submit(self._rebuild_bm25)  # non-blocking
+        self._last_updated_ts = time.time()
+        self._doc_list_cache = None  # invalidate document list cache
         logger.info("Ingested '%s': %d chunk(s) (doc_id=%s)", source, len(chunks), doc_id)
         return len(chunks)
 
@@ -239,11 +292,14 @@ class KnowledgeBase:
         if total == 0:
             return []
         n_results = min(n_results, total)
-        results = self._col.query(
-            query_texts=[query],
-            n_results=n_results,
-            include=["documents", "metadatas", "distances"],
-        )
+        # Use pre-computed SentenceTransformer embeddings when available to avoid
+        # ChromaDB downloading its ONNX model (same all-MiniLM-L6-v2, identical output).
+        query_kwargs: dict = {"n_results": n_results, "include": ["documents", "metadatas", "distances"]}
+        if _EMBED_FN is not None:
+            query_kwargs["query_embeddings"] = _EMBED_FN([query])
+        else:
+            query_kwargs["query_texts"] = [query]
+        results = self._col.query(**query_kwargs)
         hits = []
         for doc, meta, dist in zip(
             results["documents"][0],
@@ -331,6 +387,8 @@ class KnowledgeBase:
 
     def list_documents(self) -> List[Dict]:
         """Return one entry per unique doc_id: {doc_id, source, chunk_count}."""
+        if self._doc_list_cache is not None:
+            return self._doc_list_cache
         total = self._col.count()
         if total == 0:
             return []
@@ -341,7 +399,8 @@ class KnowledgeBase:
             if did not in seen:
                 seen[did] = {"doc_id": did, "source": meta.get("source", ""), "chunk_count": 0}
             seen[did]["chunk_count"] += 1
-        return sorted(seen.values(), key=lambda x: x["source"])
+        self._doc_list_cache = sorted(seen.values(), key=lambda x: x["source"])
+        return self._doc_list_cache
 
     def delete_document(self, doc_id: str) -> int:
         """Delete all chunks for doc_id. Returns number of chunks removed."""
@@ -353,7 +412,9 @@ class KnowledgeBase:
         ]
         if ids_to_delete:
             self._col.delete(ids=ids_to_delete)
-            self._rebuild_bm25()
+            self._bm25_executor.submit(self._rebuild_bm25)  # non-blocking
+            self._last_updated_ts = time.time()
+            self._doc_list_cache = None  # invalidate document list cache
             logger.info("Deleted %d chunks for doc_id=%s", len(ids_to_delete), doc_id)
         return len(ids_to_delete)
 
@@ -365,6 +426,10 @@ class KnowledgeBase:
             by_source[d["source"]] = by_source.get(d["source"], 0) + d["chunk_count"]
         return {"total_chunks": self._col.count(), "by_source": by_source}
 
+    @property
+    def cache_version(self) -> str:
+        return str(int(self._last_updated_ts))
+
     def stats(self) -> Dict:
         return {
             "total_chunks": self._col.count(),
@@ -372,6 +437,7 @@ class KnowledgeBase:
             "persist_dir": self._settings.kb_persist_dir,
             "bm25_enabled": self._settings.bm25_enabled,
             "bm25_indexed": len(self._bm25_docs),
+            "kb_version": self.cache_version,
         }
 
     def clear(self) -> None:
@@ -382,6 +448,7 @@ class KnowledgeBase:
         )
         self._bm25 = None
         self._bm25_docs = []
+        self._last_updated_ts = time.time()
         logger.warning("Knowledge base cleared")
 
     # ------------------------------------------------------------------

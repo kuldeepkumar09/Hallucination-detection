@@ -4,7 +4,7 @@ import {
   PieChart, Pie, Cell, Legend, BarChart, Bar, CartesianGrid,
   AreaChart, Area,
 } from 'recharts'
-import { getAuditStats, getAuditRecent, getKBStats, getCacheStats } from '../api'
+import { getAuditStats, getAuditRecent, getKBStats, getCacheStats, getCategoryStats } from '../api'
 
 const PIE_COLORS = {
   pass:     '#6b7280',
@@ -48,22 +48,33 @@ export default function Dashboard() {
   const [recent, setRecent]     = useState([])
   const [kbStats, setKbStats]   = useState(null)
   const [cacheStats, setCache]  = useState(null)
+  const [catStats, setCatStats] = useState({})
   const [error, setError]       = useState(null)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [lastRefreshed, setLastRefreshed] = useState(null)
+  const [apiKey, setApiKey]     = useState(() => localStorage.getItem('api_key') || '')
+  const [showApiKey, setShowApiKey] = useState(false)
+
+  // Save API key to localStorage when changed
+  const handleApiKeyChange = (value) => {
+    setApiKey(value)
+    localStorage.setItem('api_key', value)
+  }
 
   const load = useCallback(async () => {
     try {
-      const [s, r, kb, cs] = await Promise.all([
+      const [s, r, kb, cs, cat] = await Promise.all([
         getAuditStats(),
         getAuditRecent(30),
         getKBStats(),
         getCacheStats(),
+        getCategoryStats(),
       ])
       setStats(s)
       setRecent(Array.isArray(r) ? r : [])
       setKbStats(kb)
       setCache(cs)
+      setCatStats(cat && typeof cat === 'object' ? cat : {})
       setError(null)
       setLastRefreshed(new Date())
     } catch (e) {
@@ -123,6 +134,14 @@ export default function Dashboard() {
     blocked:  r.blocked_count  ?? 0,
   }))
 
+  // Category breakdown chart data
+  const categoryData = Object.entries(catStats).map(([name, d]) => ({
+    name,
+    verified: d.verified ?? 0,
+    flagged:  d.flagged  ?? 0,
+    blocked:  d.blocked  ?? 0,
+  }))
+
   const blockRate = stats?.total_requests
     ? ((stats.blocked_responses / stats.total_requests) * 100).toFixed(1)
     : '0.0'
@@ -162,10 +181,38 @@ export default function Dashboard() {
             />
             Auto-refresh (10s)
           </label>
+          <button
+            onClick={() => setShowApiKey(!showApiKey)}
+            className="btn-secondary text-xs py-1.5"
+          >
+            {showApiKey ? 'Hide API Key' : 'Settings'}
+          </button>
         </div>
       </div>
 
-      {/* KPI Cards row */}
+      {/* API Key Settings */}
+      {showApiKey && (
+        <div className="card">
+          <h3 className="text-sm font-semibold text-gray-300 mb-3">API Authentication</h3>
+          <div className="flex items-center gap-3">
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => handleApiKeyChange(e.target.value)}
+              placeholder="Enter API key (empty = no auth)"
+              className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-sky-500"
+            />
+            <span className="text-xs text-gray-500">
+              {apiKey ? 'Auth enabled' : 'Auth disabled (dev mode)'}
+            </span>
+          </div>
+          <p className="text-xs text-gray-500 mt-2">
+            API key is stored in browser localStorage. Set in <code className="bg-gray-800 px-1 rounded">.env</code> on the server.
+          </p>
+        </div>
+      )}
+
+      {/* KPI Cards row — primary metrics */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         <KPICard label="Total Requests"  value={stats?.total_requests ?? '—'}       color="text-sky-300" />
         <KPICard label="Total Claims"    value={stats?.total_claims ?? '—'}         color="text-violet-400" />
@@ -173,6 +220,28 @@ export default function Dashboard() {
         <KPICard label="Block Rate"      value={`${blockRate}%`}                    color="text-red-400" />
         <KPICard label="Avg Time"        value={stats ? `${Math.round(stats.avg_processing_ms)}ms` : '—'} color="text-yellow-400" />
         <KPICard label="KB Chunks"       value={kbStats?.total_chunks ?? '—'}       color="text-sky-300" sub={kbStats?.bm25_enabled ? 'BM25 on' : 'BM25 off'} />
+      </div>
+
+      {/* KPI Cards row — action counters (live) */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 gap-3">
+        <KPICard
+          label="Blocked Claims"
+          value={stats?.total_blocked ?? '—'}
+          color="text-red-400"
+          sub={stats ? `${stats.blocked_responses ?? 0} blocked responses` : undefined}
+        />
+        <KPICard
+          label="Flagged Claims"
+          value={stats?.total_flagged ?? '—'}
+          color="text-yellow-400"
+          sub={stats ? `${stats.flagged_responses ?? 0} flagged responses` : undefined}
+        />
+        <KPICard
+          label="Corrected Responses"
+          value={stats?.corrected_count ?? '—'}
+          color="text-green-400"
+          sub="Self-correction loop"
+        />
       </div>
 
       {/* Charts grid */}
@@ -193,9 +262,9 @@ export default function Dashboard() {
                 <Line
                   type="monotone"
                   dataKey="confidence"
-                  stroke="#38bdf8"
+                  stroke="#a855f7"
                   strokeWidth={2}
-                  dot={{ r: 3, fill: '#38bdf8' }}
+                  dot={{ r: 3, fill: '#a855f7' }}
                   activeDot={{ r: 5 }}
                 />
               </LineChart>
@@ -293,6 +362,25 @@ export default function Dashboard() {
               <Bar dataKey="verified" stackId="a" fill="#34d399" name="Verified" />
               <Bar dataKey="flagged"  stackId="a" fill="#fbbf24" name="Flagged" />
               <Bar dataKey="blocked"  stackId="a" fill="#f87171" name="Blocked" radius={[3, 3, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* Category breakdown chart */}
+      {categoryData.length > 0 && (
+        <div className="card">
+          <h3 className="text-sm font-semibold text-gray-300 mb-3">Claims by Category (Verified / Flagged / Blocked)</h3>
+          <ResponsiveContainer width="100%" height={180}>
+            <BarChart data={categoryData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+              <XAxis dataKey="name" tick={{ fill: '#9ca3af', fontSize: 11 }} />
+              <YAxis tick={{ fill: '#6b7280', fontSize: 10 }} />
+              <Tooltip content={<ChartTooltip />} />
+              <Bar dataKey="verified" stackId="cat" fill="#34d399" name="Verified" />
+              <Bar dataKey="flagged"  stackId="cat" fill="#fbbf24" name="Flagged" />
+              <Bar dataKey="blocked"  stackId="cat" fill="#f87171" name="Blocked" radius={[3, 3, 0, 0]} />
+              <Legend formatter={(v) => <span className="text-xs text-gray-300">{v}</span>} iconSize={10} />
             </BarChart>
           </ResponsiveContainer>
         </div>

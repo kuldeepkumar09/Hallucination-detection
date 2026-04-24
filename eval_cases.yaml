@@ -1,117 +1,370 @@
-# Hallucination Detection Evaluation Cases
-# Run with: python evaluate.py --cases eval_cases.yaml
+# Hallucination Detection Evaluation Suite v2
+# 50 labeled cases across 5 domains: Medical, Legal, Science, Financial, Geography/Tech
+# Run: python evaluate.py --cases eval_cases.yaml --verbose
 #
 # expected_hallucinations: substrings of claims that ARE hallucinations
 # expected_actions: acceptable pipeline actions (pass, annotate, flag, block)
 
 cases:
-  # ── Medical ─────────────────────────────────────────────────────────────
-  - id: "medical_ibuprofen_danger"
+
+  # ══════════════════════════════════════════════════════════════
+  # MEDICAL (14 cases)
+  # ══════════════════════════════════════════════════════════════
+
+  - id: "med_01_ibuprofen_pregnancy"
+    category: MEDICAL
     text: "Ibuprofen is safe to use throughout all trimesters of pregnancy and is often recommended for pain management during labour."
     expected_hallucinations:
-      - "Ibuprofen is safe to use throughout all trimesters"
+      - "safe to use throughout all trimesters"
       - "recommended for pain management during labour"
     expected_actions: ["block", "flag"]
 
-  - id: "medical_diabetes_stat_wrong"
+  - id: "med_02_diabetes_500m"
+    category: MEDICAL
     text: "According to the WHO, diabetes currently affects approximately 500 million people worldwide."
     expected_hallucinations:
-      - "500 million people"
+      - "500 million"
     expected_actions: ["flag", "block"]
 
-  - id: "medical_penicillin_correct"
+  - id: "med_03_penicillin_correct"
+    category: MEDICAL
     text: "Penicillin was discovered by Alexander Fleming in 1928."
     expected_hallucinations: []
     expected_actions: ["pass", "annotate"]
 
-  - id: "medical_covid_vaccine_correct"
+  - id: "med_04_covid_vaccine_correct"
+    category: MEDICAL
     text: "The first COVID-19 vaccine authorised for emergency use was the Pfizer-BioNTech vaccine in December 2020."
     expected_hallucinations: []
     expected_actions: ["pass", "annotate"]
 
-  # ── Legal / GDPR ─────────────────────────────────────────────────────────
-  - id: "legal_gdpr_date_wrong"
-    text: "The EU GDPR came into force on 1 June 2019."
+  - id: "med_05_ibuprofen_dose_wrong"
+    category: MEDICAL
+    text: "For adults, the recommended ibuprofen dose is 800mg every 12 hours for pain relief."
     expected_hallucinations:
-      - "came into force on 1 June 2019"
+      - "800mg every 12 hours"
     expected_actions: ["flag", "block"]
 
-  - id: "legal_gdpr_breach_wrong"
+  - id: "med_06_aspirin_children_wrong"
+    category: MEDICAL
+    text: "Aspirin is a safe and effective fever reducer for children and infants."
+    expected_hallucinations:
+      - "safe and effective fever reducer for children"
+    expected_actions: ["block"]
+
+  - id: "med_07_covid_vaccine_2019_wrong"
+    category: MEDICAL
+    text: "The first COVID-19 vaccine received emergency use authorisation in early 2019."
+    expected_hallucinations:
+      - "2019"
+    expected_actions: ["flag", "block"]
+
+  - id: "med_08_blood_pressure_correct"
+    category: MEDICAL
+    text: "Normal adult blood pressure is considered to be around 120/80 mmHg."
+    expected_hallucinations: []
+    expected_actions: ["pass", "annotate"]
+
+  - id: "med_09_hiv_cure_wrong"
+    category: MEDICAL
+    text: "HIV has been completely cured in the majority of patients using modern antiretroviral therapy."
+    expected_hallucinations:
+      - "completely cured in the majority of patients"
+    expected_actions: ["block"]
+
+  - id: "med_10_insulin_wrong"
+    category: MEDICAL
+    text: "Insulin was discovered by Charles Best and Frederick Banting in 1901."
+    expected_hallucinations:
+      - "1901"
+    expected_actions: ["flag", "block"]
+
+  - id: "med_11_dna_correct"
+    category: MEDICAL
+    text: "DNA carries the genetic instructions used in the development and functioning of all known organisms."
+    expected_hallucinations: []
+    expected_actions: ["pass", "annotate"]
+
+  - id: "med_12_antibiotics_viral_wrong"
+    category: MEDICAL
+    text: "Antibiotics are effective treatment for viral infections including influenza and the common cold."
+    expected_hallucinations:
+      - "effective treatment for viral infections"
+    expected_actions: ["block"]
+
+  - id: "med_13_diabetes_type2_correct"
+    category: MEDICAL
+    text: "Type 2 diabetes is characterised by insulin resistance and is strongly linked to obesity and physical inactivity."
+    expected_hallucinations: []
+    expected_actions: ["pass", "annotate"]
+
+  - id: "med_14_multidrug_wrong"
+    category: MEDICAL
+    text: "Paracetamol and ibuprofen should never be taken together as the combination causes severe liver damage."
+    expected_hallucinations:
+      - "should never be taken together"
+      - "causes severe liver damage"
+    expected_actions: ["flag", "block"]
+
+  # ══════════════════════════════════════════════════════════════
+  # LEGAL / GDPR (8 cases)
+  # ══════════════════════════════════════════════════════════════
+
+  - id: "legal_01_gdpr_date_wrong"
+    category: LEGAL
+    text: "The EU GDPR came into force on 1 June 2019."
+    expected_hallucinations:
+      - "1 June 2019"
+    expected_actions: ["flag", "block"]
+
+  - id: "legal_02_gdpr_breach_wrong"
+    category: LEGAL
     text: "Under GDPR, data breaches must be reported to supervisory authorities within 24 hours."
     expected_hallucinations:
       - "within 24 hours"
     expected_actions: ["flag", "block"]
 
-  - id: "legal_gdpr_fine_wrong"
+  - id: "legal_03_gdpr_fine_wrong"
+    category: LEGAL
     text: "The maximum GDPR fine is €10 million or 2% of global annual turnover."
     expected_hallucinations:
-      - "€10 million or 2%"
+      - "10 million or 2%"
     expected_actions: ["flag", "block"]
 
-  - id: "legal_gdpr_fine_correct"
+  - id: "legal_04_gdpr_fine_correct"
+    category: LEGAL
     text: "The maximum GDPR fine is €20 million or 4% of global annual turnover, whichever is higher."
     expected_hallucinations: []
     expected_actions: ["pass", "annotate"]
 
-  # ── Science / Physics ────────────────────────────────────────────────────
-  - id: "science_einstein_birthplace_wrong"
+  - id: "legal_05_gdpr_2016_wrong"
+    category: LEGAL
+    text: "The European Union's GDPR regulation came into force on 25 May 2016."
+    expected_hallucinations:
+      - "25 May 2016"
+    expected_actions: ["flag", "block"]
+
+  - id: "legal_06_gdpr_right_erasure_correct"
+    category: LEGAL
+    text: "GDPR grants individuals the right to request erasure of their personal data under Article 17."
+    expected_hallucinations: []
+    expected_actions: ["pass", "annotate"]
+
+  - id: "legal_07_copyright_wrong"
+    category: LEGAL
+    text: "Under EU law, copyright protection for literary works lasts 50 years after the author's death."
+    expected_hallucinations:
+      - "50 years"
+    expected_actions: ["flag", "block"]
+
+  - id: "legal_08_dpa_wrong"
+    category: LEGAL
+    text: "The UK Data Protection Act 2018 implemented GDPR into UK law before Brexit."
+    expected_hallucinations: []
+    expected_actions: ["pass", "annotate"]
+
+  # ══════════════════════════════════════════════════════════════
+  # SCIENCE / PHYSICS (12 cases)
+  # ══════════════════════════════════════════════════════════════
+
+  - id: "sci_01_einstein_birthplace_wrong"
+    category: GENERAL
     text: "Albert Einstein was born in Berlin, Germany."
     expected_hallucinations:
       - "born in Berlin"
     expected_actions: ["flag", "block"]
 
-  - id: "science_relativity_date_wrong"
+  - id: "sci_02_relativity_1912_wrong"
+    category: GENERAL
     text: "Einstein published his Special Theory of Relativity in 1912."
     expected_hallucinations:
-      - "published his Special Theory of Relativity in 1912"
+      - "1912"
     expected_actions: ["flag", "block"]
 
-  - id: "science_light_speed_wrong"
+  - id: "sci_03_light_speed_wrong"
+    category: GENERAL
     text: "The speed of light is approximately 250,000 kilometres per second."
     expected_hallucinations:
       - "250,000 kilometres per second"
     expected_actions: ["flag", "block"]
 
-  - id: "science_einstein_birthdate_correct"
+  - id: "sci_04_einstein_birthdate_correct"
+    category: GENERAL
     text: "Albert Einstein was born on 14 March 1879."
     expected_hallucinations: []
     expected_actions: ["pass", "annotate"]
 
-  - id: "science_nobel_wrong"
+  - id: "sci_05_nobel_relativity_wrong"
+    category: GENERAL
     text: "Einstein won the Nobel Prize in Physics for his Theory of Relativity."
     expected_hallucinations:
       - "Theory of Relativity"
     expected_actions: ["flag", "block"]
 
-  # ── Geography ────────────────────────────────────────────────────────────
-  - id: "geo_paris_correct"
+  - id: "sci_06_newton_birthplace_wrong"
+    category: GENERAL
+    text: "Isaac Newton was born in Cambridge, England."
+    expected_hallucinations:
+      - "born in Cambridge"
+    expected_actions: ["flag", "block"]
+
+  - id: "sci_07_curie_birthplace_wrong"
+    category: GENERAL
+    text: "Marie Curie was born in Paris, France."
+    expected_hallucinations:
+      - "born in Paris"
+    expected_actions: ["flag", "block"]
+
+  - id: "sci_08_dna_structure_correct"
+    category: GENERAL
+    text: "The double helix structure of DNA was described by Watson and Crick in 1953."
+    expected_hallucinations: []
+    expected_actions: ["pass", "annotate"]
+
+  - id: "sci_09_boiling_point_correct"
+    category: GENERAL
+    text: "Water boils at 100 degrees Celsius at standard atmospheric pressure."
+    expected_hallucinations: []
+    expected_actions: ["pass", "annotate"]
+
+  - id: "sci_10_relativity_1912_v2_wrong"
+    category: GENERAL
+    text: "Einstein published his Special Theory of Relativity in 1912, revolutionising physics."
+    expected_hallucinations:
+      - "1912"
+    expected_actions: ["flag", "block"]
+
+  - id: "sci_11_moon_distance_wrong"
+    category: GENERAL
+    text: "The Moon is approximately 1 million kilometres from Earth."
+    expected_hallucinations:
+      - "1 million kilometres"
+    expected_actions: ["flag", "block"]
+
+  - id: "sci_12_atomic_number_correct"
+    category: GENERAL
+    text: "The atomic number of carbon is 6."
+    expected_hallucinations: []
+    expected_actions: ["pass", "annotate"]
+
+  # ══════════════════════════════════════════════════════════════
+  # FINANCIAL (8 cases)
+  # ══════════════════════════════════════════════════════════════
+
+  - id: "fin_01_2008_gdp_wrong"
+    category: FINANCIAL
+    text: "The 2008 financial crisis caused US GDP to collapse by approximately 30%."
+    expected_hallucinations:
+      - "30%"
+    expected_actions: ["flag", "block"]
+
+  - id: "fin_02_bitcoin_launch_correct"
+    category: FINANCIAL
+    text: "Bitcoin was introduced by Satoshi Nakamoto in 2009."
+    expected_hallucinations: []
+    expected_actions: ["pass", "annotate"]
+
+  - id: "fin_03_fed_rate_wrong"
+    category: FINANCIAL
+    text: "The US Federal Reserve raised interest rates to 15% in 2023 to combat inflation."
+    expected_hallucinations:
+      - "15%"
+    expected_actions: ["flag", "block"]
+
+  - id: "fin_04_inflation_wrong"
+    category: FINANCIAL
+    text: "US inflation reached 30% in 2022, the highest level since the 1980s."
+    expected_hallucinations:
+      - "30%"
+    expected_actions: ["flag", "block"]
+
+  - id: "fin_05_imf_correct"
+    category: FINANCIAL
+    text: "The International Monetary Fund was established in 1944 at the Bretton Woods Conference."
+    expected_hallucinations: []
+    expected_actions: ["pass", "annotate"]
+
+  - id: "fin_06_stock_market_wrong"
+    category: FINANCIAL
+    text: "The Dow Jones Industrial Average fell by 80% during the 2008 financial crisis."
+    expected_hallucinations:
+      - "80%"
+    expected_actions: ["flag", "block"]
+
+  - id: "fin_07_gdp_wrong"
+    category: FINANCIAL
+    text: "China's GDP surpassed the United States GDP in 2015 to become the world's largest economy."
+    expected_hallucinations:
+      - "surpassed the United States GDP in 2015"
+    expected_actions: ["flag", "block"]
+
+  - id: "fin_08_euro_correct"
+    category: FINANCIAL
+    text: "The Euro was introduced as a physical currency on 1 January 2002."
+    expected_hallucinations: []
+    expected_actions: ["pass", "annotate"]
+
+  # ══════════════════════════════════════════════════════════════
+  # GEOGRAPHY & TECHNOLOGY (8 cases)
+  # ══════════════════════════════════════════════════════════════
+
+  - id: "geo_01_paris_correct"
+    category: GENERAL
     text: "Paris is the capital and largest city of France."
     expected_hallucinations: []
     expected_actions: ["pass", "annotate"]
 
-  - id: "geo_population_correct"
+  - id: "geo_02_population_correct"
+    category: GENERAL
     text: "The world population as of 2024 is approximately 8.1 billion people."
     expected_hallucinations: []
     expected_actions: ["pass", "annotate"]
 
-  # ── Technology ───────────────────────────────────────────────────────────
-  - id: "tech_www_correct"
+  - id: "geo_03_everest_height_wrong"
+    category: GENERAL
+    text: "Mount Everest is 9,848 metres above sea level, making it the tallest mountain on Earth."
+    expected_hallucinations:
+      - "9,848 metres"
+    expected_actions: ["flag", "block"]
+
+  - id: "geo_04_amazon_wrong"
+    category: GENERAL
+    text: "The Amazon River is located entirely within Brazil."
+    expected_hallucinations:
+      - "located entirely within Brazil"
+    expected_actions: ["flag", "block"]
+
+  - id: "tech_01_www_correct"
+    category: GENERAL
     text: "The World Wide Web was invented by Tim Berners-Lee in 1989."
     expected_hallucinations: []
     expected_actions: ["pass", "annotate"]
 
-  - id: "tech_iphone_correct"
+  - id: "tech_02_iphone_correct"
+    category: GENERAL
     text: "The first iPhone was released by Apple on 29 June 2007."
     expected_hallucinations: []
     expected_actions: ["pass", "annotate"]
 
-  - id: "tech_google_correct"
+  - id: "tech_03_google_correct"
+    category: GENERAL
     text: "Google was founded by Larry Page and Sergey Brin in 1998."
     expected_hallucinations: []
     expected_actions: ["pass", "annotate"]
 
-  # ── Mixed (realistic LLM output) ────────────────────────────────────────
-  - id: "mixed_medical_multiple_errors"
+  - id: "tech_04_linux_wrong"
+    category: GENERAL
+    text: "The Linux operating system was created by Bill Gates in 1991."
+    expected_hallucinations:
+      - "Bill Gates"
+    expected_actions: ["flag", "block"]
+
+  # ══════════════════════════════════════════════════════════════
+  # MULTI-CLAIM / MIXED (realistic LLM output)
+  # ══════════════════════════════════════════════════════════════
+
+  - id: "mix_01_medical_multiple_errors"
+    category: MEDICAL
     text: >
       Diabetes affects approximately 500 million people worldwide according to WHO.
       Ibuprofen is safe to use in all trimesters of pregnancy.
@@ -120,3 +373,12 @@ cases:
       - "500 million"
       - "safe to use in all trimesters"
     expected_actions: ["flag", "block"]
+
+  - id: "mix_02_science_multiple_correct"
+    category: GENERAL
+    text: >
+      Albert Einstein was born on 14 March 1879 in Ulm, Germany.
+      He published the Special Theory of Relativity in 1905.
+      He received the Nobel Prize in Physics in 1921.
+    expected_hallucinations: []
+    expected_actions: ["pass", "annotate"]

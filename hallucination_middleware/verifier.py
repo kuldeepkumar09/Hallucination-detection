@@ -7,8 +7,10 @@ Supports: multi-query expansion, cross-encoder re-ranking, claim cache, ensemble
 import asyncio
 import json
 import logging
+import random
 import re
-from typing import Dict, List, Optional, Tuple
+import time
+from typing import Dict, List, Optional, Tuple, Callable, Coroutine, Any
 
 from openai import AsyncOpenAI
 
@@ -24,6 +26,7 @@ from .models import (
     VerifiedClaim,
 )
 from .reranker import CrossEncoderReranker
+from .web_search import web_search_structured
 
 logger = logging.getLogger(__name__)
 
@@ -32,53 +35,79 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 VERIFIER_SYSTEM = """\
-You are a rigorous fact-checker. Given claims and reference source documents, verify each claim.
+You are a precise fact-checker. Verify each claim against the provided source documents.
 
-Verification rules:
-- VERIFIED: Claim is clearly and directly supported by the sources.
-- CONTRADICTED: Claim directly conflicts with source information.
-- PARTIALLY_SUPPORTED: Sources provide some support but not definitive confirmation.
-- UNVERIFIABLE: Sources do not address the claim at all.
+Status definitions:
+- verified: The claim is directly and clearly supported by the source text. Use confidence 0.75-1.00.
+- contradicted: The source explicitly states something that conflicts with the claim. Use confidence 0.00-0.35.
+- partially_supported: Sources mention the topic but only partially confirm the claim, or only some parts are supported. Use confidence 0.40-0.70.
+- unverifiable: The sources do not contain relevant information about this claim. Use confidence 0.20-0.40.
 
-Confidence: 0.9+=very strong, 0.7=good, 0.5=moderate, 0.3=weak, 0.1=almost none.
-Only mark VERIFIED with clear, direct evidence.
-If no relevant sources listed for a claim, mark UNVERIFIABLE with confidence 0.3.
+Confidence calibration:
+- 0.92-1.00: Claim matches source almost word-for-word
+- 0.80-0.91: Claim is clearly and directly supported
+- 0.65-0.79: Claim is mostly supported with minor gaps
+- 0.45-0.64: Partial or indirect support only
+- 0.20-0.44: Contradicted or no evidence found
 
-Respond with ONLY a JSON object (no markdown, no explanation):
-{
-  "results": [
-    {
-      "claim_index": 0,
-      "status": "verified|contradicted|partially_supported|unverifiable",
-      "confidence": 0.85,
-      "reasoning": "brief explanation",
-      "key_evidence": "relevant quote from sources",
-      "contradiction_reason": "why it contradicts (if applicable)"
-    }
-  ]
-}"""
+Rules:
+- key_evidence MUST be an exact verbatim quote from the source (max 150 chars). Do NOT paraphrase.
+- If no source mentions the claim, use status=unverifiable — NOT contradicted.
+- contradicted requires positive evidence in the source that DIRECTLY conflicts.
+- reasoning should be 1-2 sentences explaining your decision.
+- Output ONLY raw JSON starting with { — no markdown, no code fences, no prose before or after.
+
+Output format:
+{"results":[{"claim_index":0,"status":"verified","confidence":0.88,"reasoning":"The source directly states this fact.","key_evidence":"exact quote from source here","contradiction_reason":""}]}"""
+
+VERIFIER_SYSTEM_SIMPLE = """\
+You are a fact-checker. Verify the claim against the sources. Output ONLY JSON starting with {
+Status: verified (source supports it) | contradicted (source conflicts) | partially_supported (partial match) | unverifiable (not mentioned)
+{"status":"verified","confidence":0.85,"reasoning":"1-2 sentence reason","key_evidence":"exact quote","contradiction_reason":""}"""
 
 QUERY_EXPANSION_SYSTEM = """\
-Generate diverse search queries to find evidence for or against a factual claim.
-Respond with ONLY a JSON object:
-{"queries": ["query1", "query2", "query3"]}"""
+Generate diverse search queries to find evidence for a factual claim in a knowledge base.
+Vary phrasing — use different keywords, synonyms, and angles to maximise recall.
+Output ONLY JSON starting with {
+{"queries":["specific query 1","broader query 2"]}"""
 
 
 def _extract_json(text: str) -> dict:
-    """Robustly parse JSON from LLM output — handles markdown fences and embedded JSON."""
+    """Robustly parse JSON from LLM output — handles markdown, prose, truncation."""
     if not text:
         return {}
+
+    # Strip markdown fences and leading prose
     text = re.sub(r"```(?:json)?\s*", "", text).replace("```", "").strip()
+
+    # Direct parse
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
+
+    # Find outermost {...} block
+    start = text.find("{")
+    if start != -1:
+        # Try progressively smaller substrings (handles truncated JSON)
+        for end in range(len(text), start, -1):
+            candidate = text[start:end]
+            if not candidate.endswith("}"):
+                continue
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+
+    # Last resort: regex
     match = re.search(r"\{.*\}", text, re.DOTALL)
     if match:
         try:
             return json.loads(match.group())
         except json.JSONDecodeError:
             pass
+
+    logger.debug("JSON extraction failed. Raw LLM output: %s", text[:300])
     return {}
 
 
@@ -100,20 +129,99 @@ class Verifier:
         self._settings = get_settings()
         s = self._settings
 
-        self._client = AsyncOpenAI(
-            base_url=s.ollama_base_url,
-            api_key=s.ollama_api_key,
-            timeout=s.request_timeout,  # configurable timeout; defaults to 8 min for slow model loads
-        )
+        # NVIDIA NIM is OpenAI-compatible — same client, different base URL
+        if s.llm_provider == "nvidia_nim":
+            self._client = AsyncOpenAI(
+                base_url=s.nvidia_nim_base_url,
+                api_key=s.nvidia_nim_api_key,
+                timeout=s.request_timeout,
+            )
+        else:
+            self._client = AsyncOpenAI(
+                base_url=s.ollama_base_url,
+                api_key=s.ollama_api_key,
+                timeout=s.request_timeout,
+            )
+        self._ollama_request_extra: dict = {}
 
-        # Anthropic fallback client
+        # Anthropic native client — used when llm_provider=anthropic
         self._anthropic_client = None
         if s.llm_provider == "anthropic":
             try:
-                import anthropic as _anthropic
+                import anthropic as _anthropic  # noqa: PLC0415
                 self._anthropic_client = _anthropic.AsyncAnthropic(api_key=s.anthropic_api_key)
             except ImportError:
-                pass
+                logger.warning("anthropic package not installed; falling back to Ollama client")
+
+    # ------------------------------------------------------------------
+    # Unified LLM call (routes to Anthropic SDK or OpenAI-compatible)
+    # ------------------------------------------------------------------
+
+    async def _llm_call(
+        self,
+        model: str,
+        messages: List[Dict],
+        temperature: float = 0.0,
+        max_tokens: int = 2048,
+        json_fmt: bool = True,
+        timeout: float = 90.0,
+    ) -> str:
+        """Send a chat request to whichever provider is configured. Returns raw text.
+        Retries up to 3 times with exponential backoff for transient errors."""
+        s = self._settings
+        max_retries = 3
+        base_delay = 1.0
+
+        for attempt in range(max_retries):
+            try:
+                if s.llm_provider == "anthropic" and self._anthropic_client is not None:
+                    system = "\n".join(m["content"] for m in messages if m["role"] == "system")
+                    user_msgs = [m for m in messages if m["role"] != "system"]
+                    resp = await asyncio.wait_for(
+                        self._anthropic_client.messages.create(
+                            model=model,
+                            system=system,
+                            messages=user_msgs,
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                        ),
+                        timeout=timeout,
+                    )
+                    return next(
+                        (block.text for block in resp.content if hasattr(block, "text")), ""
+                    )
+
+                # OpenAI-compatible path (Ollama / NVIDIA NIM)
+                # json_object format hangs on NVIDIA NIM — disable it there
+                use_json_fmt = json_fmt and s.llm_provider != "nvidia_nim"
+                create_kwargs: dict = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    **self._ollama_request_extra,
+                }
+                if use_json_fmt:
+                    create_kwargs["response_format"] = {"type": "json_object"}
+                response = await asyncio.wait_for(
+                    self._client.chat.completions.create(**create_kwargs),
+                    timeout=timeout,
+                )
+                return response.choices[0].message.content or ""
+
+            except (asyncio.TimeoutError, Exception) as exc:
+                # Don't retry auth errors
+                exc_str = str(exc).lower()
+                if any(kw in exc_str for kw in ("401", "403", "unauthorized", "forbidden", "api key")):
+                    raise
+                if attempt == max_retries - 1:
+                    raise
+                delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+                logger.debug(
+                    "LLM call attempt %d/%d failed (%s), retrying in %.1fs",
+                    attempt + 1, max_retries, exc, delay,
+                )
+                await asyncio.sleep(delay)
+        return ""  # unreachable — loop always raises on final attempt
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -122,7 +230,15 @@ class Verifier:
     async def verify(
         self, claims: List[ExtractedClaim]
     ) -> Tuple[List[VerifiedClaim], List[RetrievalMetadata]]:
-        """Verify all claims. Returns (verified_claims, retrieval_metadata_list). Never raises."""
+        """Verify all claims. Delegates to verify_streaming with no progress callback."""
+        return await self.verify_streaming(claims, progress_cb=None)
+
+    async def verify_streaming(
+        self,
+        claims: List[ExtractedClaim],
+        progress_cb: Optional[Callable[[str, dict], Coroutine[Any, Any, None]]] = None,
+    ) -> Tuple[List[VerifiedClaim], List[RetrievalMetadata]]:
+        """Verify claims with streaming progress updates. Returns (verified_claims, retrieval_metadata_list). Never raises."""
         if not claims:
             return [], []
 
@@ -135,11 +251,20 @@ class Verifier:
 
         if s.cache_enabled:
             for i, claim in enumerate(claims):
-                cached = self._cache.get(claim.normalized)
+                cached = await self._cache.get(claim.normalized)
                 if cached is not None:
                     results[i] = cached
                     meta_list[i] = RetrievalMetadata(claim_id=claim.id, cache_hit=True)
                     logger.debug("[cache hit] %s", claim.normalized[:60])
+                    if progress_cb:
+                        await progress_cb("claim_verified", {
+                            "claim": claim.model_dump(),
+                            "status": cached.status.value,
+                            "confidence": cached.confidence,
+                            "cache_hit": True,
+                            "ensemble_used": False,
+                            "key_evidence": cached.key_evidence,
+                        })
                 else:
                     uncached_indices.append(i)
         else:
@@ -174,20 +299,47 @@ class Verifier:
 
         verified_uncached: List[Optional[VerifiedClaim]] = [None] * len(uncached_claims)
 
-        if standard_idx:
-            std_claims = [uncached_claims[i] for i in standard_idx]
-            std_docs = [claim_docs[i] for i in standard_idx]
-            std_verified = await self._batch_verify(std_claims, std_docs, s.verifier_model)
-            for local_i, global_i in enumerate(standard_idx):
-                verified_uncached[global_i] = std_verified[local_i]
+        # Process claims in batches for streaming
+        batch_size = s.streaming_batch_size
+        all_indices = standard_idx + ensemble_idx
+        
+        for i in range(0, len(all_indices), batch_size):
+            batch_indices = all_indices[i:i + batch_size]
+            
+            # Process batch
+            batch_claims = [uncached_claims[j] for j in batch_indices]
+            batch_docs = [claim_docs[j] for j in batch_indices]
+            
+            # Determine which model to use for this batch
+            if any(j in ensemble_idx for j in batch_indices):
+                # Use ensemble for batches containing critical/high stakes claims
+                batch_verified = await self._ensemble_verify(batch_claims, batch_docs)
+                for local_i, global_i in enumerate(batch_indices):
+                    verified_uncached[global_i] = batch_verified[local_i]
+                    claim_metas[global_i].ensemble_used = True
+            else:
+                # Use standard verification for other batches
+                batch_verified = await self._batch_verify(batch_claims, batch_docs, s.verifier_model)
+                for local_i, global_i in enumerate(batch_indices):
+                    verified_uncached[global_i] = batch_verified[local_i]
 
-        if ensemble_idx:
-            ens_claims = [uncached_claims[i] for i in ensemble_idx]
-            ens_docs = [claim_docs[i] for i in ensemble_idx]
-            ens_verified = await self._ensemble_verify(ens_claims, ens_docs)
-            for local_i, global_i in enumerate(ensemble_idx):
-                verified_uncached[global_i] = ens_verified[local_i]
-                claim_metas[global_i].ensemble_used = True
+            # Send progress updates for completed claims in this batch
+            if progress_cb:
+                for local_i, global_i in enumerate(batch_indices):
+                    vc = verified_uncached[global_i]
+                    if vc is not None:
+                        await progress_cb("claim_verified", {
+                            "claim": vc.claim.model_dump(),
+                            "status": vc.status.value,
+                            "confidence": vc.confidence,
+                            "cache_hit": claim_metas[global_i].cache_hit,
+                            "ensemble_used": claim_metas[global_i].ensemble_used,
+                            "key_evidence": vc.key_evidence,
+                        })
+            
+            # Throttle updates only when streaming to a client (no-op for non-streaming calls)
+            if progress_cb is not None and i + batch_size < len(all_indices):
+                await asyncio.sleep(s.streaming_claim_delay)
 
         # Step 5: Cache + merge results
         for local_i, global_i in enumerate(uncached_indices):
@@ -197,7 +349,7 @@ class Verifier:
             results[global_i] = vc
             meta_list[global_i] = claim_metas[local_i]
             if s.cache_enabled:
-                self._cache.set(claims[global_i].normalized, vc)
+                await self._cache.set(claims[global_i].normalized, vc)
 
         return [r for r in results], [m for m in meta_list]  # type: ignore
 
@@ -209,9 +361,13 @@ class Verifier:
         s = self._settings
         if not s.multi_query_enabled and not s.hyde_enabled:
             return [claim.normalized]
+        # Skip LLM expansion for low/medium stakes — direct KB lookup is fast enough.
+        # Only expand for critical/high stakes where thoroughness justifies the LLM call.
+        if claim.stakes.value in ("low", "medium") and not s.hyde_enabled:
+            return [claim.normalized]
 
         try:
-            response = await self._client.chat.completions.create(
+            content = await self._llm_call(
                 model=s.extractor_model,
                 messages=[
                     {"role": "system", "content": QUERY_EXPANSION_SYSTEM},
@@ -221,9 +377,9 @@ class Verifier:
                         f"Generate {s.multi_query_count} search queries to find evidence."
                     )},
                 ],
-                temperature=0.3,
+                json_fmt=True,
+                timeout=30.0,
             )
-            content = response.choices[0].message.content or ""
             data = _extract_json(content)
             queries = data.get("queries", [])
             if queries:
@@ -249,7 +405,8 @@ class Verifier:
         queries: List[str],
     ) -> Tuple[List[Dict], RetrievalMetadata]:
         s = self._settings
-        tasks = [self._kb.query_async(q, n_results=s.kb_top_k) for q in queries]
+        n_results = s.reranker_candidate_count if s.reranker_enabled else s.kb_top_k
+        tasks = [self._kb.query_async(q, n_results=n_results) for q in queries]
         all_results: List[List[Dict]] = await asyncio.gather(*tasks)
 
         seen_excerpts: set = set()
@@ -262,6 +419,23 @@ class Verifier:
                     merged.append(hit)
 
         total_retrieved = len(merged)
+
+        # Web-RAG fallback: if KB has no good evidence, query the live web
+        if s.web_rag_enabled:
+            top_kb_score = merged[0]["relevance_score"] if merged else 0.0
+            if top_kb_score < s.web_rag_kb_threshold:
+                logger.info(
+                    "[Web-RAG] KB top score %.2f < %.2f for claim: %s — querying web",
+                    top_kb_score, s.web_rag_kb_threshold, claim.normalized[:60],
+                )
+                web_docs = await web_search_structured(claim.normalized, max_results=3)
+                for wd in web_docs:
+                    key = wd["excerpt"][:120]
+                    if key not in seen_excerpts:
+                        seen_excerpts.add(key)
+                        merged.append(wd)
+                if web_docs:
+                    total_retrieved += len(web_docs)
 
         if s.reranker_enabled and merged and self._reranker is not None:
             merged = await self._reranker.rerank_async(claim.normalized, merged, top_k=max(s.reranker_top_k, 3))
@@ -322,29 +496,39 @@ class Verifier:
         )
         user_content = (
             f"CLAIMS TO VERIFY:\n{claims_text}\n\n"
-            f"SOURCE MAPPING (which sources apply to each claim):\n{mapping}\n\n"
-            f"REFERENCE SOURCES:\n" + "\n\n".join(sources) +
-            "\n\nReturn ONLY the JSON verification results."
+            f"SOURCE MAPPING:\n{mapping}\n\n"
+            f"SOURCES:\n" + "\n\n".join(sources) +
+            "\n\nOutput ONLY JSON starting with {\"results\":"
         )
 
+        content = ""
         try:
-            response = await self._client.chat.completions.create(
+            content = await self._llm_call(
                 model=model,
                 messages=[
                     {"role": "system", "content": VERIFIER_SYSTEM},
                     {"role": "user", "content": user_content},
                 ],
-                temperature=0.1,
+                temperature=0.0,
+                max_tokens=2048,
+                json_fmt=True,
+                timeout=90.0,
             )
-            content = response.choices[0].message.content or ""
-            data = _extract_json(content)
-            raw_results = data.get("results", [])
-            if raw_results:
-                return self._build_results(claims, claim_docs, raw_results)
+        except asyncio.TimeoutError:
+            logger.warning("Verifier LLM call timed out after 90s — returning unverifiable")
+            return self._all_unverifiable(claims, "LLM verification timed out (90s)")
         except Exception as exc:
-            logger.error("Verifier error (%s): %s", model, exc)
+            logger.error("Verifier LLM call failed (%s): %s", model, exc)
+            return self._all_unverifiable(claims, f"LLM error: {exc}")
 
-        return self._all_unverifiable(claims, "Verification failed.")
+        data = _extract_json(content)
+        raw_results = data.get("results", [])
+        if raw_results:
+            return self._build_results(claims, claim_docs, raw_results)
+
+        # Attempt 2: simplified per-claim prompt when batch fails
+        logger.warning("Batch verify returned no results — retrying with simplified prompt. Raw: %s", content[:200])
+        return await self._simple_verify_fallback(claims, claim_docs, model)
 
     # ------------------------------------------------------------------
     # Ensemble
@@ -426,6 +610,52 @@ class Verifier:
                 contradiction_reason=r.get("contradiction_reason") or None,
             ))
         return verified
+
+    async def _simple_verify_fallback(
+        self,
+        claims: List[ExtractedClaim],
+        claim_docs: List[List[Dict]],
+        model: str,
+    ) -> List[VerifiedClaim]:
+        """Verify one claim at a time with a minimal prompt — used when batch fails."""
+        results: List[VerifiedClaim] = []
+        for i, claim in enumerate(claims):
+            docs = claim_docs[i]
+            if not docs:
+                results.append(self._make_unverifiable(claim, "No source documents found."))
+                continue
+
+            source_text = "\n\n".join(
+                f"[{j}] {d['source']}: {d['excerpt'][:300]}"
+                for j, d in enumerate(docs[:3])
+            )
+            prompt = (
+                f"Claim: {claim.normalized}\n\n"
+                f"Sources:\n{source_text}\n\n"
+                f'Output JSON: {{"status":"verified|contradicted|partially_supported|unverifiable","confidence":0.7,"reasoning":"reason","key_evidence":"quote"}}'
+            )
+            try:
+                content = await self._llm_call(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": VERIFIER_SYSTEM_SIMPLE},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.0,
+                    max_tokens=200,
+                    json_fmt=True,
+                    timeout=30.0,
+                )
+                data = _extract_json(content)
+                raw = [{"claim_index": 0, **data}] if data.get("status") else []
+                if raw:
+                    built = self._build_results([claim], [docs], raw)
+                    results.append(built[0])
+                    continue
+            except Exception as exc:
+                logger.debug("Simple verify fallback error for claim %d: %s", i, exc)
+            results.append(self._make_unverifiable(claim, "Verification failed after retry."))
+        return results
 
     @staticmethod
     def _make_unverifiable(claim: ExtractedClaim, reason: str) -> VerifiedClaim:

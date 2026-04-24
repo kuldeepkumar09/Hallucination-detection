@@ -29,6 +29,30 @@ export default function Settings() {
   const [wikiTopic, setWikiTopic] = useState('')
   const [wikiLang, setWikiLang]   = useState('en')
   const [wikiLoading, setWikiLoading] = useState(false)
+  const [apiKey, setApiKey]       = useState(localStorage.getItem('api_key') || '')
+  const [apiKeyVisible, setApiKeyVisible] = useState(false)
+  const [apiKeySaved, setApiKeySaved] = useState(false)
+
+  function handleSaveApiKey(e) {
+    e.preventDefault()
+    const trimmed = apiKey.trim()
+    if (trimmed) {
+      localStorage.setItem('api_key', trimmed)
+    } else {
+      localStorage.removeItem('api_key')
+    }
+    window.dispatchEvent(new Event('storage'))
+    setApiKeySaved(true)
+    setTimeout(() => setApiKeySaved(false), 2000)
+    toast.success(trimmed ? 'API key saved' : 'API key cleared')
+  }
+
+  function handleClearApiKey() {
+    setApiKey('')
+    localStorage.removeItem('api_key')
+    window.dispatchEvent(new Event('storage'))
+    toast.success('API key cleared')
+  }
 
   const reload = useCallback(async () => {
     setLoadingHealth(true)
@@ -87,6 +111,48 @@ export default function Settings() {
         <p className="text-gray-400 text-sm mt-1">System configuration and management tools.</p>
       </div>
 
+      {/* API Key */}
+      <Section title="API Key">
+        <p className="text-xs text-gray-500">
+          Stored in your browser only. Must match <code className="text-gray-400">API_KEY</code> in the backend <code className="text-gray-400">.env</code> file. Default: <code className="text-gray-400">hallu-dev-secret-2024</code>
+        </p>
+        <form onSubmit={handleSaveApiKey} className="space-y-3">
+          <div className="flex gap-2">
+            <input
+              type={apiKeyVisible ? 'text' : 'password'}
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="hallu-dev-secret-2024"
+              className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-sky-600 font-mono"
+            />
+            <button
+              type="button"
+              onClick={() => setApiKeyVisible((v) => !v)}
+              className="btn-secondary text-xs py-2 px-3 shrink-0"
+            >
+              {apiKeyVisible ? 'Hide' : 'Show'}
+            </button>
+          </div>
+          <div className="flex gap-3">
+            <button type="submit" className="btn-primary text-sm py-1.5">
+              {apiKeySaved ? 'Saved!' : 'Save API Key'}
+            </button>
+            {localStorage.getItem('api_key') && (
+              <button type="button" onClick={handleClearApiKey} className="btn-danger text-sm py-1.5">
+                Clear
+              </button>
+            )}
+          </div>
+        </form>
+        {localStorage.getItem('api_key') && (
+          <StatRow
+            label="Stored key"
+            value={`${localStorage.getItem('api_key').slice(0, 10)}…`}
+            valueClass="text-emerald-400 font-mono"
+          />
+        )}
+      </Section>
+
       {/* System Status */}
       <Section title="System Status">
         {loadingHealth ? (
@@ -131,6 +197,19 @@ export default function Settings() {
             label="KB Min Relevance"
             value={health.knowledge_base?.kb_min_relevance ?? '0.35'}
             valueClass="text-sky-300"
+          />
+          <StatRow
+            label="Streaming Enabled"
+            value={health.streaming?.enabled ? 'Yes' : 'No'}
+            valueClass={health.streaming?.enabled ? 'text-emerald-400' : 'text-gray-400'}
+          />
+          <StatRow
+            label="Streaming Batch Size"
+            value={health.streaming?.batch_size ?? '—'}
+          />
+          <StatRow
+            label="Streaming Claim Delay"
+            value={health.streaming?.claim_delay != null ? `${health.streaming.claim_delay}s` : '—'}
           />
         </Section>
       )}

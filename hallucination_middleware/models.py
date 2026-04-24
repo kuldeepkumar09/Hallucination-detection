@@ -56,6 +56,7 @@ class ExtractedClaim(BaseModel):
     stakes: ClaimStakes
     span_start: int
     span_end: int
+    category: str = "GENERAL"  # MEDICAL | LEGAL | FINANCIAL | GENERAL
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +103,10 @@ class ClaimDecision(BaseModel):
     action: DecisionAction
     annotation: str = ""
 
+    @property
+    def category(self) -> str:
+        return getattr(self.verified_claim.claim, "category", "GENERAL")
+
 
 # ---------------------------------------------------------------------------
 # Audit
@@ -135,6 +140,7 @@ class HallucinationAudit(BaseModel):
     retrieval_metadata: List[RetrievalMetadata] = []
     original_text: str = ""
     annotated_text: str = ""
+    corrected_text: Optional[str] = None   # Self-corrected version (None if no issues or disabled)
 
     def finalize(self, original_text: str = "", processing_time_ms: float = 0.0) -> None:
         self.total_claims = len(self.claims)
@@ -178,3 +184,20 @@ class HallucinationAudit(BaseModel):
 
         self.original_text = original_text
         self.processing_time_ms = round(processing_time_ms, 2)
+
+
+# ---------------------------------------------------------------------------
+# MPC (Model Predictive Control)
+# ---------------------------------------------------------------------------
+
+class MPCCandidate(BaseModel):
+    text: str
+    cost: float         # 1.0 - avg_kb_confidence (lower = more factual)
+    kb_score: float     # avg KB relevance score across claims in this candidate
+    selected: bool = False
+
+
+class MPCResult(BaseModel):
+    original_text: str
+    corrected_text: str
+    candidates_per_chunk: List[List[MPCCandidate]] = []

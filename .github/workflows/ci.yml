@@ -1,0 +1,155 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  # ── Lint & security scan ─────────────────────────────────────────────────
+  lint:
+    name: Lint & Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install lint tools
+        run: pip install ruff
+
+      - name: Ruff lint check
+        run: ruff check hallucination_middleware/ tests/ --select E,W,F,N --ignore E501,N802,N806
+
+      - name: Check no dead framework imports
+        run: |
+          if grep -r "from langchain\|import langchain\|import streamlit\|import plotly" hallucination_middleware/ *.py 2>/dev/null; then
+            echo "Dead imports found!" && exit 1
+          fi
+          echo "No dead imports."
+
+      - name: Check no hardcoded secrets in frontend
+        run: |
+          if grep -r "hallu-dev-secret\|hallu-admin-secret" frontend/src/ 2>/dev/null; then
+            echo "Hardcoded secret found in frontend!" && exit 1
+          fi
+          echo "No hardcoded secrets."
+
+  # ── Unit & accuracy-gate tests ───────────────────────────────────────────
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install CPU-only torch (avoids large CUDA wheels in CI)
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install project dependencies
+        run: |
+          grep -v "^torch" requirements.txt > requirements-notorch.txt
+          pip install -r requirements-notorch.txt
+
+      - name: Download spaCy English model
+        run: python -m spacy download en_core_web_sm
+
+      - name: Run decision-engine & accuracy-gate tests (no LLM needed)
+        env:
+          LLM_PROVIDER: ollama
+          CACHE_ENABLED: "false"
+          RATE_LIMIT_ENABLED: "false"
+          WEB_RAG_ENABLED: "false"
+          SEMANTIC_CACHE_ENABLED: "false"
+          RERANKER_ENABLED: "false"
+          KB_PERSIST_DIR: /tmp/test_chroma
+          CHROMA_DB_PATH: /tmp/test_chroma
+        run: |
+          python -m pytest \
+            tests/test_accuracy_gate.py \
+            tests/test_decision_engine.py \
+            tests/test_verifier_logic.py \
+            tests/test_corrector.py \
+            -v --tb=short -x
+
+      - name: Run knowledge-base tests
+        env:
+          LLM_PROVIDER: ollama
+          CACHE_ENABLED: "false"
+          KB_PERSIST_DIR: /tmp/test_chroma_kb
+          CHROMA_DB_PATH: /tmp/test_chroma_kb
+        run: |
+          python -m pytest \
+            tests/test_kb.py \
+            tests/test_kb_validation.py \
+            -v --tb=short
+
+      - name: Enforce accuracy gate (precision ≥ 0.85, recall ≥ 0.80)
+        env:
+          LLM_PROVIDER: ollama
+          CACHE_ENABLED: "false"
+          KB_PERSIST_DIR: /tmp/test_chroma_gate
+          CHROMA_DB_PATH: /tmp/test_chroma_gate
+        run: |
+          python -m pytest tests/test_accuracy_gate.py::test_precision_recall_gate -v
+
+  # ── Docker image build ───────────────────────────────────────────────────
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: hallucheck:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Frontend build ───────────────────────────────────────────────────────
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install npm dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build React SPA
+        working-directory: frontend
+        run: npm run build
+
+      - name: Verify build artefact
+        run: |
+          test -f frontend/dist/index.html
+          echo "Frontend dist/index.html present — build OK"

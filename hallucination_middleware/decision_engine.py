@@ -6,8 +6,7 @@ Decision matrix
 ---------------
 CONTRADICTED + critical or high stakes           → BLOCK
 CONTRADICTED + medium or low stakes              → FLAG
-UNVERIFIABLE + critical stakes                   → BLOCK  (cannot take the risk)
-UNVERIFIABLE + high / medium / low stakes        → FLAG
+UNVERIFIABLE (any stakes)                        → FLAG  (no evidence ≠ wrong; never BLOCK)
 confidence < block_threshold + critical stakes   → BLOCK
 confidence < flag_threshold                      → FLAG
 PARTIALLY_SUPPORTED (any stakes)                 → FLAG
@@ -49,20 +48,34 @@ class DecisionEngine:
             ))
         return decisions
 
+    def _get_thresholds(self, category: str) -> Tuple[float, float]:
+        """Return (block_threshold, flag_threshold) for the given claim category."""
+        block = self._settings.domain_block_thresholds.get(
+            category, self._settings.block_threshold
+        )
+        flag = self._settings.domain_flag_thresholds.get(
+            category, self._settings.flag_threshold
+        )
+        return float(block), float(flag)
+
     def _classify(self, vc: VerifiedClaim) -> Tuple[DecisionAction, str]:
         status = vc.status
         confidence = vc.confidence
         stakes = vc.claim.stakes
+        category = getattr(vc.claim, "category", "GENERAL")
         is_critical = stakes == ClaimStakes.CRITICAL
         is_high = stakes == ClaimStakes.HIGH
 
+        block_threshold, flag_threshold = self._get_thresholds(category)
+
         # ---- CONTRADICTED ------------------------------------------------
+        # Only CONTRADICTED claims get BLOCK — we have positive evidence they are wrong.
         if status == VerificationStatus.CONTRADICTED:
             reason = vc.contradiction_reason or "Conflicts with authoritative source"
             if is_critical or is_high:
                 return (
                     DecisionAction.BLOCK,
-                    f"BLOCKED — Contradiction detected ({stakes.value} stakes): {reason}",
+                    f"BLOCKED — Contradiction detected ({stakes.value} stakes, {category}): {reason}",
                 )
             return (
                 DecisionAction.FLAG,
@@ -70,15 +83,17 @@ class DecisionEngine:
             )
 
         # ---- UNVERIFIABLE -------------------------------------------------
+        # No evidence found ≠ wrong. Never BLOCK on lack of evidence — only FLAG.
         if status == VerificationStatus.UNVERIFIABLE:
             if is_critical:
                 return (
-                    DecisionAction.BLOCK,
-                    "BLOCKED — Critical claim that cannot be verified against any authoritative source",
+                    DecisionAction.FLAG,
+                    f"FLAGGED — Critical {category} claim: no authoritative source found. "
+                    "Add relevant documents to the knowledge base to verify.",
                 )
             return (
                 DecisionAction.FLAG,
-                "FLAGGED — Unverifiable: no authoritative source found for this claim",
+                "FLAGGED — Unverifiable: no matching source in knowledge base.",
             )
 
         # ---- PARTIALLY SUPPORTED -----------------------------------------
@@ -91,18 +106,18 @@ class DecisionEngine:
                 ),
             )
 
-        # ---- VERIFIED — check confidence thresholds ----------------------
-        if confidence < self._settings.block_threshold and is_critical:
+        # ---- VERIFIED — apply domain-specific thresholds ----
+        if confidence < block_threshold and is_critical:
             return (
                 DecisionAction.BLOCK,
-                f"BLOCKED — Critical claim with very low verification confidence ({confidence:.2f})",
+                f"BLOCKED — {category} claim below block threshold {block_threshold:.2f} (confidence {confidence:.2f})",
             )
 
-        if confidence < self._settings.flag_threshold:
+        if confidence < flag_threshold:
             return (
                 DecisionAction.FLAG,
                 (
-                    f"FLAGGED — Low confidence ({confidence:.2f}): "
+                    f"FLAGGED — Low confidence ({confidence:.2f}, {category} threshold {flag_threshold:.2f}): "
                     f"{vc.verification_reasoning[:120]}"
                 ),
             )
@@ -112,7 +127,7 @@ class DecisionEngine:
             sources = ", ".join(d.source for d in vc.supporting_docs[:2]) or "knowledge base"
             return (
                 DecisionAction.ANNOTATE,
-                f"VERIFIED (confidence {confidence:.2f}) — Source: {sources}",
+                f"VERIFIED (confidence {confidence:.2f}, {category}) — Source: {sources}",
             )
 
         return (DecisionAction.PASS, "")

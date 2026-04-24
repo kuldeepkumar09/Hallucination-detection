@@ -1,0 +1,59 @@
+# Hallucination Detection Middleware v3 — Cline Context
+
+## Project Stack
+- **Backend**: Python 3.11+, FastAPI, ChromaDB (vector DB), BM25 hybrid search
+- **Frontend**: React 18, Vite, Recharts, TailwindCSS
+- **Active LLM**: NVIDIA NIM cloud GPU inference (OpenAI-compatible API)
+  - Extractor: meta/llama-3.1-8b-instruct
+  - Verifier: meta/llama-3.3-70b-instruct
+- **Local LLM fallback**: Ollama with phi3:mini or mistral:7b
+
+## Architecture
+```
+Request → ClaimExtractor → Verifier (KB + Web-RAG) → DecisionEngine → SelfCorrector → Response
+                                  ↓
+                         ClaimCache (semantic + Redis + in-memory)
+```
+
+## Key Conventions
+- All LLM clients use `AsyncOpenAI` — NIM is OpenAI-compatible, no special client needed
+- Category field: `MEDICAL | LEGAL | FINANCIAL | GENERAL` — flows through ExtractedClaim → ClaimDecision → proxy → frontend
+- Domain block thresholds: MEDICAL=0.95, LEGAL=0.90, FINANCIAL=0.85, GENERAL=0.40
+- Cache class is `ClaimCache` (not VerificationCache) in `cache.py`
+- Corrector class is `SelfCorrector` (not Corrector) in `corrector.py`
+- Never write directly to `audit_trail.jsonl` — use `AuditTrail` class methods
+
+## Entry Points
+```bash
+python run_proxy.py        # Start server → http://localhost:8080
+python demo.py             # Run 4 test cases through pipeline
+python evaluate.py --cases eval_cases.yaml  # Evaluate 26 test cases
+python benchmark.py        # Measure latency/throughput
+python ingest_wikipedia.py "Topic"  # Add Wikipedia article to KB
+```
+
+## Feature Flags (.env)
+```ini
+LLM_PROVIDER=nvidia_nim        # Active provider
+WEB_RAG_ENABLED=true           # Falls back to web search when KB score < 0.40
+SELF_CORRECTION_ENABLED=true   # Rewrites flagged/blocked claims
+MPC_ENABLED=false              # Off by default — expensive (3N LLM calls)
+BM25_ENABLED=true              # Hybrid BM25 + vector search
+SEMANTIC_CACHE_ENABLED=true    # Cosine-similarity cache for verified claims
+RERANKER_ENABLED=false         # Cross-encoder re-ranking (GPU-accelerated)
+```
+
+## Important File Paths
+- `hallucination_middleware/config.py` — all settings (Pydantic BaseSettings)
+- `hallucination_middleware/models.py` — ExtractedClaim, ClaimDecision, HallucinationAudit
+- `hallucination_middleware/pipeline.py` — orchestrates full pipeline
+- `hallucination_middleware/proxy.py` — FastAPI app, all HTTP endpoints
+- `hallucination_middleware/audit_trail.py` — JSONL audit log + stats
+- `frontend/src/api.js` — all frontend API calls
+- `frontend/src/components/Dashboard.jsx` — live monitoring charts
+- `frontend/src/components/Playground.jsx` — interactive claim testing UI
+
+## GPU Support
+- sentence-transformers and ChromaDB embeddings auto-use CUDA when `torch` + NVIDIA GPU present
+- Check: `python -c "import torch; print(torch.cuda.is_available())"`
+- NVIDIA NIM handles LLM GPU inference in the cloud (no local GPU needed for LLM)

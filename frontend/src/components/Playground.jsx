@@ -1,7 +1,9 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, Fragment } from 'react'
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from 'recharts'
-import { verifyText } from '../api'
 import { useToast } from './Toast'
+import { getHealth } from '../api'
+
+const BASE = import.meta.env.VITE_API_BASE ?? ''
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -24,6 +26,13 @@ const ACTION_COLORS = {
   flag:     '#fbbf24',
   annotate: '#38bdf8',
   pass:     '#6b7280',
+}
+
+const CATEGORY_BADGE = {
+  MEDICAL:   'bg-red-900/60 text-red-300 border border-red-700',
+  LEGAL:     'bg-purple-900/60 text-purple-300 border border-purple-700',
+  FINANCIAL: 'bg-yellow-900/60 text-yellow-300 border border-yellow-700',
+  GENERAL:   'bg-gray-800 text-gray-400 border border-gray-700',
 }
 
 const CONFIDENCE_COLOR = (c) => {
@@ -213,11 +222,23 @@ export default function Playground() {
   const [text, setText] = useState('')
   const [loading, setLoading] = useState(false)
   const [elapsed, setElapsed] = useState(0)
+  const [stage, setStage] = useState('')
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
   const [expandedRow, setExpandedRow] = useState(null)
   const [showAnnotated, setShowAnnotated] = useState(false)
+  const [apiKeySet, setApiKeySet] = useState(Boolean(localStorage.getItem('api_key')))
+  const [streamedClaims, setStreamedClaims] = useState([])
+  const [streamedProgress, setStreamedProgress] = useState({ total: 0, cached: 0, verified: 0 })
   const textareaRef = useRef(null)
+
+  // Sync apiKeySet when localStorage changes (e.g. user saves key in Settings tab)
+  useEffect(() => {
+    const handler = () => setApiKeySet(Boolean(localStorage.getItem('api_key')))
+    window.addEventListener('storage', handler)
+    return () => window.removeEventListener('storage', handler)
+  }, [])
+  const abortRef = useRef(null)
 
   // Elapsed timer while loading
   useEffect(() => {
@@ -226,17 +247,6 @@ export default function Playground() {
     return () => clearInterval(id)
   }, [loading])
 
-  // Keyboard shortcut: Ctrl/Cmd + Enter
-  useEffect(() => {
-    const handler = (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && text.trim() && !loading) {
-        handleVerify()
-      }
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [text, loading])
-
   const handleVerify = useCallback(async () => {
     if (!text.trim() || loading) return
     setLoading(true)
@@ -244,24 +254,132 @@ export default function Playground() {
     setResult(null)
     setExpandedRow(null)
     setShowAnnotated(false)
-    try {
-      const data = await verifyText(text)
-      setResult(data)
-      const n = data.total_claims ?? 0
-      if (data.response_blocked) {
-        toast.error(`Response blocked — ${data.block_reason || 'high risk claims detected'}`)
-      } else if (n === 0) {
-        toast.info('No factual claims detected in this text.')
-      } else {
-        toast.success(`${n} claim${n !== 1 ? 's' : ''} analysed in ${Math.round(data.processing_time_ms)}ms`)
+    setStreamedClaims([])
+    setStreamedProgress({ total: 0, cached: 0, verified: 0 })
+
+    const controller = new AbortController()
+    abortRef.current = controller
+    let retryCount = 0
+    const MAX_RETRIES = 2
+
+    const attemptVerify = async () => {
+      setStage(retryCount > 0 ? `Retrying (${retryCount}/${MAX_RETRIES})…` : 'Connecting to pipeline…')
+
+      const apiKey = localStorage.getItem('api_key') || ''
+      const response = await fetch(`${BASE}/verify/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}),
+        },
+        body: JSON.stringify({ text, model: 'playground' }),
+        signal: controller.signal,
+      })
+
+      if (!response.ok) {
+        let detail = `HTTP ${response.status}`
+        try { detail = (await response.json()).detail || detail } catch {}
+        throw new Error(detail)
       }
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const event = JSON.parse(line.slice(6))
+            if (event.stage === 'done') {
+              const data = event.result
+              setResult(data)
+              const n = data.total_claims ?? 0
+              if (data.response_blocked) {
+                toast.error(`Response blocked — ${data.block_reason || 'high risk claims detected'}`)
+              } else if (n === 0) {
+                toast.info('No factual claims detected in this text.')
+              } else {
+                toast.success(`${n} claim${n !== 1 ? 's' : ''} analysed in ${Math.round(data.processing_time_ms)}ms`)
+              }
+            } else if (event.stage === 'corrected') {
+              if (event.corrected_text) {
+                setResult(prev => prev ? { ...prev, corrected_text: event.corrected_text } : prev)
+                setStage('Self-correction applied.')
+              }
+            } else if (event.stage === 'claim_verified') {
+              const claim = event.claim || {}
+              setStreamedClaims((prev) => {
+                const updated = prev.filter((c) => c.id !== claim.id)
+                return [...updated, {
+                  ...claim,
+                  status: event.status,
+                  confidence: event.confidence,
+                  cache_hit: event.cache_hit,
+                  ensemble_used: event.ensemble_used,
+                  key_evidence: event.key_evidence,
+                }]
+              })
+              setStreamedProgress((prev) => ({
+                total: prev.total + 1,
+                cached: prev.cached + (event.cache_hit ? 1 : 0),
+                verified: prev.verified + (event.status === 'verified' ? 1 : 0),
+              }))
+              setStage(`Verified ${event.status.replace('_', ' ')} — ${claim.normalized?.slice(0, 60) || ''}`)
+            } else if (event.stage === 'error') {
+              throw new Error(event.message || 'Pipeline error')
+            } else if (event.message) {
+              setStage(event.message)
+            }
+          } catch (parseErr) {
+            if (parseErr.message !== 'Pipeline error' && !parseErr.message?.startsWith('HTTP')) continue
+            throw parseErr
+          }
+        }
+      }
+    }
+
+    try {
+      await attemptVerify()
     } catch (e) {
-      setError(e.message)
-      toast.error(e.message)
+      if (e.name === 'AbortError') {
+        // User cancelled — do nothing
+      } else if (retryCount < MAX_RETRIES && !controller.signal.aborted) {
+        retryCount++
+        try {
+          await new Promise(resolve => setTimeout(resolve, 2000))
+          await attemptVerify()
+        } catch (retryErr) {
+          if (retryErr.name !== 'AbortError') {
+            setError(retryErr.message)
+            toast.error(retryErr.message)
+          }
+        }
+      } else {
+        setError(e.message)
+        toast.error(e.message)
+      }
     } finally {
       setLoading(false)
+      setStage('')
     }
   }, [text, loading, toast])
+
+  // Keyboard shortcut: Ctrl/Cmd + Enter — declared after handleVerify to avoid TDZ error
+  useEffect(() => {
+    const handler = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        handleVerify()
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [handleVerify])
 
   const claims = result?.claims ?? []
   const blocked = claims.filter((c) => c.action === 'block').length
@@ -289,6 +407,14 @@ export default function Playground() {
           <span className="text-gray-600 ml-2">Ctrl+Enter to submit.</span>
         </p>
       </div>
+
+      {/* API key warning banner */}
+      {!apiKeySet && (
+        <div className="card border-yellow-700 bg-yellow-950/30 text-yellow-300 text-sm flex items-center justify-between gap-3 py-3">
+          <span>No API key configured — requests will fail with 401 Unauthorized.</span>
+          <a href="/settings" className="btn-secondary text-xs py-1 shrink-0">Go to Settings →</a>
+        </div>
+      )}
 
       {/* Sample buttons */}
       <div className="flex flex-wrap gap-2">
@@ -347,13 +473,16 @@ export default function Playground() {
       {error && (
         <div className="card border-red-800 bg-red-950/40 text-red-300 text-sm space-y-3">
           <p><strong>Error:</strong> {error}</p>
-          {(error.includes('timed out') || error.includes('fetch') || error.includes('Failed to fetch') || error.includes('unreachable')) ? (
+          {(error.includes('Invalid API key') || error.includes('401')) ? (
             <div className="text-xs text-gray-500 space-y-1 border-t border-gray-800 pt-3">
-              <p className="font-medium text-gray-400">Troubleshooting:</p>
-              <p>1. Make sure Ollama is running: <code className="text-gray-300">ollama serve</code></p>
-              <p>2. Pull the model: <code className="text-gray-300">ollama pull llama3.2</code></p>
-              <p>3. Start the backend: <code className="text-gray-300">python run_proxy.py</code></p>
-              <p>4. First request takes 1–3 min while model loads — this is normal</p>
+              <p className="font-medium text-gray-400">API key not set or incorrect.</p>
+              <p>Go to <a href="/settings" className="text-sky-400 underline">Settings</a> and enter your API key (default: <code className="text-gray-300">hallu-dev-secret-2024</code>).</p>
+            </div>
+          ) : (error.includes('Failed to fetch') || error.includes('fetch') || error.includes('unreachable')) ? (
+            <div className="text-xs text-gray-500 space-y-1 border-t border-gray-800 pt-3">
+              <p className="font-medium text-gray-400">Backend is offline or still starting up.</p>
+              <p>1. Start with: <code className="text-gray-300">docker compose up -d</code></p>
+              <p>2. Wait ~30s for the model to load, then retry.</p>
             </div>
           ) : (
             <p className="text-red-400/70 text-xs">Make sure the backend is running at <code className="text-red-300">http://localhost:8080</code></p>
@@ -367,23 +496,42 @@ export default function Playground() {
       {/* Skeleton while loading */}
       {loading && (
         <>
-          <ResultsSkeleton />
-          <div className="text-center space-y-2 pb-2">
-            <p className="text-sm text-gray-400">
-              {elapsed < 15
-                ? 'Extracting claims from text…'
-                : elapsed < 45
-                ? 'Verifying claims against knowledge base…'
-                : elapsed < 90
-                ? 'Still working — local LLM can be slow on first run…'
-                : `Running for ${elapsed}s — Ollama loads model on first use (1–3 min is normal)`}
-            </p>
-            {elapsed >= 30 && (
-              <p className="text-xs text-gray-600">
-                Tip: run <code className="text-gray-500">ollama pull llama3.2</code> in advance to pre-load the model
+          <div className="flex flex-col items-center justify-center py-10 gap-4">
+            <span className="spinner w-12 h-12 inline-block" style={{ borderWidth: 3 }} />
+            <div className="text-center space-y-1">
+              <p className="text-sm text-gray-300 font-medium">
+                {stage || (elapsed < 15
+                  ? 'Extracting claims from text…'
+                  : elapsed < 45
+                  ? 'Verifying claims against knowledge base…'
+                  : elapsed < 90
+                  ? 'Still working — verifying all claims…'
+                  : `Running for ${elapsed}s — first run may take longer`)}
               </p>
-            )}
+              <p className="text-xs text-gray-500">
+                {streamedProgress.total} claim(s) streamed, {streamedProgress.cached} cached, {streamedProgress.verified} verified so far.
+              </p>
+              {streamedClaims.length > 0 && (
+                <div className="text-xs text-gray-400 space-y-1 mt-2">
+                  <div className="font-semibold">Live claim stream</div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 text-gray-300">
+                    {streamedClaims.slice(-4).map((c, idx) => (
+                      <span key={c.id || idx} className="inline-flex items-center gap-1 px-2 py-1 rounded bg-gray-900/80">
+                        <strong>{c.status?.replace('_', ' ') || 'pending'}</strong>
+                        <span className="truncate">{c.normalized?.slice(0, 40) || c.text?.slice(0, 40)}</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {elapsed >= 60 && (
+                <p className="text-xs text-gray-600">
+                  NVIDIA NIM is processing — this can take up to 2 minutes on first run.
+                </p>
+              )}
+            </div>
           </div>
+          <ResultsSkeleton />
         </>
       )}
 
@@ -456,7 +604,7 @@ export default function Playground() {
 
           {/* Claims table */}
           {claims.length > 0 && (
-            <div className="card overflow-x-auto">
+            <div className="card">
               <div className="flex items-center justify-between mb-3">
                 <h2 className="text-sm font-semibold text-gray-300">
                   Claims Analysis ({claims.length})
@@ -472,12 +620,14 @@ export default function Playground() {
                   Copy all
                 </button>
               </div>
+              <div className="overflow-x-auto -mx-4 px-4" style={{ WebkitOverflowScrolling: 'touch' }}>
               <table className="w-full text-sm min-w-[640px]">
                 <thead>
                   <tr className="text-left text-xs text-gray-500 border-b border-gray-800">
                     <th className="pb-2 pr-3 font-medium">Claim</th>
                     <th className="pb-2 pr-3 font-medium w-24">Type</th>
                     <th className="pb-2 pr-3 font-medium w-20">Stakes</th>
+                    <th className="pb-2 pr-3 font-medium w-24">Category</th>
                     <th className="pb-2 pr-3 font-medium w-32">Status</th>
                     <th className="pb-2 pr-3 font-medium w-16 text-right">Conf.</th>
                     <th className="pb-2 font-medium w-20">Action</th>
@@ -485,9 +635,8 @@ export default function Playground() {
                 </thead>
                 <tbody>
                   {claims.map((c, i) => (
-                    <>
+                    <Fragment key={c.id || i}>
                       <tr
-                        key={c.id || i}
                         className={`claim-row border-b border-gray-800/40 cursor-pointer hover:bg-gray-800/40 transition-colors ${
                           expandedRow === i ? 'bg-gray-800/40' : ''
                         }`}
@@ -500,8 +649,13 @@ export default function Playground() {
                         <td className="py-2 pr-3 text-gray-400 text-xs">{c.type}</td>
                         <td className="py-2 pr-3 text-gray-400 text-xs">{c.stakes}</td>
                         <td className="py-2 pr-3">
+                          <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${CATEGORY_BADGE[c.category] || CATEGORY_BADGE.GENERAL}`}>
+                            {c.category || 'GENERAL'}
+                          </span>
+                        </td>
+                        <td className="py-2 pr-3">
                           <span className={STATUS_BADGE[c.status] || 'badge-unverifiable'}>
-                            {c.status?.replace('_', ' ')}
+                            {c.status?.replace(/_/g, ' ')}
                           </span>
                         </td>
                         <td className={`py-2 pr-3 text-right font-mono text-xs ${CONFIDENCE_COLOR(c.confidence)}`}>
@@ -515,16 +669,61 @@ export default function Playground() {
                       </tr>
                       {expandedRow === i && (
                         <EvidenceDrawer
-                          key={`ev-${i}`}
                           claim={c}
                           onClose={() => setExpandedRow(null)}
                         />
                       )}
-                    </>
+                    </Fragment>
                   ))}
                 </tbody>
               </table>
+              </div>
               <p className="text-xs text-gray-700 mt-2">Click any row to expand evidence details.</p>
+            </div>
+          )}
+
+          {/* Self-corrected output (shown first if available) */}
+          {result.corrected_text && (
+            <div className="card border-green-800">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-green-400 text-sm font-semibold">Auto-Corrected Response</span>
+                  <span className="text-xs text-gray-500 bg-gray-800 px-2 py-0.5 rounded">Self-Correction Loop</span>
+                </div>
+                <button
+                  className="copy-btn text-xs"
+                  onClick={() => { navigator.clipboard.writeText(result.corrected_text); toast.success('Copied corrected text') }}
+                >
+                  Copy
+                </button>
+              </div>
+              <pre className="whitespace-pre-wrap text-sm text-gray-200 font-sans leading-relaxed bg-gray-800 rounded-lg p-4 max-h-96 overflow-y-auto">
+                {result.corrected_text}
+              </pre>
+              <p className="text-xs text-gray-500 mt-2">
+                The LLM silently fixed its own hallucinations using authoritative evidence from the knowledge base.
+              </p>
+            </div>
+          )}
+
+          {/* Before / After diff view */}
+          {result.corrected_text && result.original_text && result.corrected_text.trim() !== result.original_text.trim() && (
+            <div className="card border-gray-700">
+              <h2 className="text-sm font-semibold text-gray-300 mb-3">Before / After Comparison</h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <p className="text-xs text-red-400 font-semibold mb-1">Original (with hallucinations)</p>
+                  <pre className="whitespace-pre-wrap text-xs text-gray-400 font-sans leading-relaxed bg-red-950/20 border border-red-900/40 rounded-lg p-3 max-h-64 overflow-y-auto">
+                    {result.original_text}
+                  </pre>
+                </div>
+                <div>
+                  <p className="text-xs text-green-400 font-semibold mb-1">Corrected (verified facts)</p>
+                  <pre className="whitespace-pre-wrap text-xs text-gray-200 font-sans leading-relaxed bg-green-950/20 border border-green-900/40 rounded-lg p-3 max-h-64 overflow-y-auto">
+                    {result.corrected_text}
+                  </pre>
+                </div>
+              </div>
             </div>
           )}
 

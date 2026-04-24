@@ -45,18 +45,25 @@ def main() -> None:
         print("  Add your key to .env or switch to LLM_PROVIDER=ollama (free).")
         sys.exit(1)
 
+    if settings.llm_provider == "nvidia_nim" and not settings.nvidia_nim_api_key:
+        print("ERROR: LLM_PROVIDER=nvidia_nim but NVIDIA_NIM_API_KEY is not set.")
+        print("  Get a free key at https://build.nvidia.com and add it to .env")
+        sys.exit(1)
+
     host = args.host or settings.proxy_host
     port = args.port or settings.proxy_port
 
     print()
-    print("╔══════════════════════════════════════════════════════╗")
-    print("║       Hallucination Detection Proxy  v2.0            ║")
-    print("╚══════════════════════════════════════════════════════╝")
+    print("=" * 56)
+    print("   Hallucination Detection Proxy  v3.0")
+    print("=" * 56)
     print(f"  Listening on   :  http://{host}:{port}")
-    if settings.llm_provider == "ollama":
-        print(f"  LLM Provider   :  Ollama (FREE local) at {settings.ollama_base_url}")
+    if settings.llm_provider == "nvidia_nim":
+        print(f"  LLM Provider   :  NVIDIA NIM -> {settings.nvidia_nim_base_url}")
+    elif settings.llm_provider == "ollama":
+        print(f"  LLM Provider   :  Ollama (local) at {settings.ollama_base_url}")
     else:
-        print(f"  LLM Provider   :  Anthropic  →  {settings.anthropic_api_base}")
+        print(f"  LLM Provider   :  Anthropic -> {settings.anthropic_api_base}")
     print(f"  Extractor      :  {settings.extractor_model}")
     print(f"  Verifier       :  {settings.verifier_model}")
     print(f"  KB directory   :  {settings.kb_persist_dir}")
@@ -77,7 +84,7 @@ def main() -> None:
     print()
     print("  Endpoints:  /health  /verify  /audit/recent  /audit/stats  /kb/stats  /cache/stats")
     print()
-    print("  Frontend:   cd frontend && npm run dev  →  http://localhost:5173")
+    print("  Frontend:   cd frontend && npm run dev  ->  http://localhost:5173")
     print()
 
     import uvicorn  # noqa: PLC0415

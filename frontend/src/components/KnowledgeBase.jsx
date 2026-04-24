@@ -58,8 +58,14 @@ export default function KnowledgeBase() {
   const [urlSource, setUrlSource] = useState('')
 
   // Wikipedia
-  const [wikiTopic, setWikiTopic] = useState('')
-  const [wikiLang, setWikiLang]   = useState('en')
+  const [wikiQuery, setWikiQuery]         = useState('')
+  const [wikiTopic, setWikiTopic]         = useState('')
+  const [wikiLang, setWikiLang]           = useState('en')
+  const [wikiMode, setWikiMode]           = useState('full')
+  const [wikiSearchResults, setWikiSearchResults] = useState([])
+  const [wikiSearching, setWikiSearching] = useState(false)
+  const [wikiPreview, setWikiPreview]     = useState(null)
+  const [wikiPreviewing, setWikiPreviewing] = useState(false)
 
   // Filters / sort
   const [search, setSearch]   = useState('')
@@ -70,7 +76,7 @@ export default function KnowledgeBase() {
     try {
       const [s, d] = await Promise.all([getKBStats(), getKBDocuments()])
       setStats(s)
-      setDocs(Array.isArray(d) ? d : [])
+      setDocs(Array.isArray(d) ? d : (d?.documents ?? []))
     } catch (e) {
       toast.error('Failed to load KB: ' + e.message)
     } finally {
@@ -144,18 +150,53 @@ export default function KnowledgeBase() {
     }
   }
 
+  async function handleWikiSearch(e) {
+    e.preventDefault()
+    if (!wikiQuery.trim()) return
+    setWikiSearching(true)
+    setWikiPreview(null)
+    setWikiTopic('')
+    try {
+      const BASE = import.meta.env.VITE_API_BASE ?? ''
+      const res = await fetch(`${BASE}/kb/search/wikipedia?q=${encodeURIComponent(wikiQuery)}&language=${wikiLang}&n=8`)
+      const data = await res.json()
+      setWikiSearchResults(data.results || [])
+      if (!data.results?.length) toast.info('No Wikipedia results found.')
+    } catch (e) {
+      toast.error('Wikipedia search failed: ' + e.message)
+    } finally {
+      setWikiSearching(false)
+    }
+  }
+
+  async function handleWikiPreview(title) {
+    setWikiTopic(title)
+    setWikiPreviewing(true)
+    setWikiPreview(null)
+    try {
+      const BASE = import.meta.env.VITE_API_BASE ?? ''
+      const res = await fetch(`${BASE}/kb/wikipedia/info?topic=${encodeURIComponent(title)}&language=${wikiLang}`)
+      if (!res.ok) throw new Error('Page not found')
+      const data = await res.json()
+      setWikiPreview(data)
+    } catch (e) {
+      toast.error('Could not load Wikipedia preview: ' + e.message)
+    } finally {
+      setWikiPreviewing(false)
+    }
+  }
+
   async function handleWiki(e) {
     e.preventDefault()
     if (!wikiTopic.trim()) return
     setSubmitting(true)
     try {
-      const res = await ingestWikipedia(wikiTopic.trim(), wikiLang)
-      if (res.chunks_added > 0) {
-        toast.success(`Added ${res.chunks_added} chunks from Wikipedia: "${res.topic}"`)
-      } else {
-        toast.error(`Wikipedia page not found: "${wikiTopic}"`)
-      }
+      const res = await ingestWikipedia(wikiTopic.trim(), wikiLang, wikiMode)
+      toast.success(`Added ${res.chunks_added} chunks from Wikipedia: "${res.topic}" (${wikiMode})`)
+      setWikiQuery('')
       setWikiTopic('')
+      setWikiPreview(null)
+      setWikiSearchResults([])
       await reload()
     } catch (e) {
       toast.error('Wikipedia ingestion failed: ' + e.message)
@@ -365,55 +406,161 @@ export default function KnowledgeBase() {
 
       {/* ── WIKIPEDIA tab ── */}
       {activeTab === 'wiki' && (
-        <form onSubmit={handleWiki} className="card space-y-4 max-w-2xl">
-          <div>
-            <h2 className="text-sm font-semibold text-gray-300">Wikipedia Ingestion</h2>
-            <p className="text-xs text-gray-500 mt-1">
-              Fetch a Wikipedia article and add it to the knowledge base. Free, no API key required.
-            </p>
-          </div>
-          <div>
-            <label className="text-xs text-gray-500 block mb-1">Article Title</label>
-            <input
-              type="text"
-              value={wikiTopic}
-              onChange={(e) => setWikiTopic(e.target.value)}
-              placeholder="e.g. Penicillin, GDPR, Albert Einstein"
-              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-sky-600"
-              required
-            />
-          </div>
-          <div>
-            <label className="text-xs text-gray-500 block mb-1">Language</label>
-            <select
-              value={wikiLang}
-              onChange={(e) => setWikiLang(e.target.value)}
-              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-300 focus:outline-none"
-            >
-              <option value="en">English (en)</option>
-              <option value="de">German (de)</option>
-              <option value="fr">French (fr)</option>
-              <option value="es">Spanish (es)</option>
-              <option value="ja">Japanese (ja)</option>
-            </select>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {['Penicillin', 'GDPR', 'Albert Einstein', 'COVID-19 vaccine', 'Machine learning'].map((t) => (
-              <button
-                key={t}
-                type="button"
-                onClick={() => setWikiTopic(t)}
-                className="filter-chip filter-chip-inactive text-xs"
+        <div className="space-y-4 max-w-2xl">
+
+          {/* Step 1 — Search */}
+          <div className="card space-y-3">
+            <div>
+              <h2 className="text-sm font-semibold text-gray-300">Wikipedia Search</h2>
+              <p className="text-xs text-gray-500 mt-0.5">Search Wikipedia then preview and ingest any article. No API key required.</p>
+            </div>
+            <form onSubmit={handleWikiSearch} className="flex gap-2">
+              <input
+                type="text"
+                value={wikiQuery}
+                onChange={(e) => setWikiQuery(e.target.value)}
+                placeholder="Search Wikipedia…"
+                className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-sky-600"
+              />
+              <select
+                value={wikiLang}
+                onChange={(e) => { setWikiLang(e.target.value); setWikiSearchResults([]); setWikiPreview(null) }}
+                className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-300 focus:outline-none"
               >
-                {t}
+                <option value="en">EN</option>
+                <option value="de">DE</option>
+                <option value="fr">FR</option>
+                <option value="es">ES</option>
+                <option value="hi">HI</option>
+                <option value="ja">JA</option>
+                <option value="zh">ZH</option>
+              </select>
+              <button type="submit" disabled={wikiSearching || !wikiQuery.trim()} className="btn-primary px-4">
+                {wikiSearching ? <span className="spinner w-4 h-4 inline-block" /> : 'Search'}
               </button>
-            ))}
+            </form>
+
+            {/* Quick-pick chips */}
+            <div className="flex flex-wrap gap-2">
+              {['Albert Einstein', 'GDPR', 'Penicillin', 'COVID-19 vaccine', 'Machine learning', 'Python (programming)'].map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => { setWikiQuery(t); setWikiTopic(t); handleWikiPreview(t) }}
+                  className="filter-chip filter-chip-inactive text-xs"
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+
+            {/* Search results */}
+            {wikiSearchResults.length > 0 && (
+              <div className="space-y-1 border-t border-gray-800 pt-3">
+                <p className="text-xs text-gray-500 mb-2">Click an article to preview it:</p>
+                {wikiSearchResults.map((r) => (
+                  <button
+                    key={r.title}
+                    type="button"
+                    onClick={() => handleWikiPreview(r.title)}
+                    className={`w-full text-left px-3 py-2 rounded-lg border text-sm transition-colors ${
+                      wikiTopic === r.title
+                        ? 'border-sky-600 bg-sky-900/20 text-sky-300'
+                        : 'border-gray-700 bg-gray-800 text-gray-300 hover:border-gray-500'
+                    }`}
+                  >
+                    <div className="font-medium">{r.title}</div>
+                    {r.description && <div className="text-xs text-gray-500 truncate mt-0.5">{r.description}</div>}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
-          <button type="submit" disabled={submitting || !wikiTopic.trim()} className="btn-primary flex items-center gap-2">
-            {submitting && <span className="spinner w-4 h-4 inline-block" />}
-            {submitting ? 'Fetching Wikipedia…' : 'Ingest from Wikipedia'}
-          </button>
-        </form>
+
+          {/* Step 2 — Preview + Ingest */}
+          {(wikiPreviewing || wikiPreview || wikiTopic) && (
+            <div className="card space-y-4">
+              {wikiPreviewing && (
+                <div className="flex items-center gap-2 text-gray-400 text-sm">
+                  <span className="spinner w-4 h-4 inline-block" />
+                  Loading preview…
+                </div>
+              )}
+
+              {wikiPreview && (
+                <>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h3 className="text-base font-semibold text-white">{wikiPreview.title}</h3>
+                      <a href={wikiPreview.url} target="_blank" rel="noreferrer" className="text-xs text-sky-500 hover:underline">
+                        {wikiPreview.url}
+                      </a>
+                    </div>
+                    <div className="text-right text-xs text-gray-500 shrink-0">
+                      <div>{wikiPreview.section_count} sections</div>
+                      <div>{(wikiPreview.text_length / 1000).toFixed(0)}k chars</div>
+                    </div>
+                  </div>
+
+                  <p className="text-sm text-gray-300 leading-relaxed bg-gray-800 rounded-lg px-3 py-2">
+                    {wikiPreview.summary}
+                  </p>
+
+                  {wikiPreview.sections?.length > 0 && (
+                    <div>
+                      <p className="text-xs text-gray-500 mb-1">Sections:</p>
+                      <div className="flex flex-wrap gap-1">
+                        {wikiPreview.sections.slice(0, 12).map((s) => (
+                          <span key={s} className="text-xs bg-gray-800 text-gray-400 px-2 py-0.5 rounded border border-gray-700">{s}</span>
+                        ))}
+                        {wikiPreview.sections.length > 12 && (
+                          <span className="text-xs text-gray-600">+{wikiPreview.sections.length - 12} more</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* Ingest form */}
+              <form onSubmit={handleWiki} className="space-y-3 border-t border-gray-800 pt-3">
+                <div className="flex items-center gap-3">
+                  <div className="flex-1">
+                    <label className="text-xs text-gray-500 block mb-1">Article to ingest</label>
+                    <input
+                      type="text"
+                      value={wikiTopic}
+                      onChange={(e) => setWikiTopic(e.target.value)}
+                      placeholder="Article title"
+                      className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-sky-600"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-500 block mb-1">Mode</label>
+                    <select
+                      value={wikiMode}
+                      onChange={(e) => setWikiMode(e.target.value)}
+                      className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-300 focus:outline-none"
+                    >
+                      <option value="full">Full article</option>
+                      <option value="summary">Summary only</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="text-xs text-gray-500">
+                  {wikiMode === 'full'
+                    ? 'Ingests the entire article — best for thorough fact-checking.'
+                    : 'Ingests only the intro paragraph — faster, less storage.'}
+                </div>
+                <button type="submit" disabled={submitting || !wikiTopic.trim()} className="btn-primary flex items-center gap-2">
+                  {submitting && <span className="spinner w-4 h-4 inline-block" />}
+                  {submitting ? 'Ingesting…' : `Ingest "${wikiTopic || 'article'}" (${wikiMode})`}
+                </button>
+              </form>
+            </div>
+          )}
+        </div>
       )}
     </div>
   )

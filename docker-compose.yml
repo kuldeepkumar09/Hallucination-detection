@@ -1,0 +1,93 @@
+# ── HalluCheck v3 — production-ready multi-worker deployment ────────────────
+#
+# Scaling: docker compose up --scale middleware=3
+#
+# Architecture:
+#   nginx (port 80/443)  ──→  3× middleware workers (port 8080)
+#                         ├──→  redis (shared cache + rate limiting)
+#                         └──→  chroma_db volume (shared ChromaDB)
+#
+# All workers share the same Redis and ChromaDB volume so rate limiting and
+# caching work correctly across processes (no per-process state drift).
+
+services:
+
+  # ── Middleware workers ─────────────────────────────────────────────────────
+  middleware:
+    build: .
+    expose:
+      - "8080"
+    env_file: .env
+    environment:
+      - PROXY_HOST=0.0.0.0
+      - PROXY_PORT=8080
+      - KB_PERSIST_DIR=/data/chroma_db
+      - AUDIT_LOG_PATH=/data/audit_trail.jsonl
+      - CHROMA_DB_PATH=/data/chroma_db
+      - REDIS_URL=redis://redis:6379
+      - RATE_LIMIT_REDIS_ENABLED=true
+      # host.docker.internal resolves to the Windows host — reaches Ollama running on your PC
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434/v1
+    volumes:
+      - chroma_data:/data/chroma_db
+      - audit_data:/data
+    restart: unless-stopped
+    deploy:
+      replicas: 2        # start with 2; scale with: docker compose up --scale middleware=N
+      resources:
+        limits:
+          memory: 4g
+        reservations:
+          memory: 1g
+          devices:
+            - driver: nvidia
+              count: all          # use all available GPUs; set count: 1 for single-GPU
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # ── nginx load balancer ────────────────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - nginx_certs:/etc/nginx/certs
+    depends_on:
+      - middleware
+    restart: unless-stopped
+
+  # ── Redis (shared cache + rate limiting) ───────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      redis-server
+        --maxmemory 512mb
+        --maxmemory-policy allkeys-lru
+        --save 60 1
+        --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - redis_data:/data
+    # ports:
+    #   - "6379:6379"   # uncomment only if you need Redis access from the host
+
+volumes:
+  chroma_data:
+  audit_data:
+  redis_data:
+  nginx_certs:

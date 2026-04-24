@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+venv/
+.venv/
+env/
+
+# Node
+node_modules/
+frontend/node_modules/
+
+# Dev artifacts
+.git/
+.gitignore
+*.md
+*.bat
+*.sh
+!entrypoint.sh
+.env
+.env.*
+!.env.example
+
+# Data (mounted as volumes in production)
+chroma_db/
+audit_trail.jsonl
+audit_trail.jsonl.*.gz
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Tests
+tests/
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Tooling
+.aider*
+.clinerules

@@ -1,24 +1,32 @@
 """
-HallucinationDetectionPipeline — orchestrates all middleware components.
+HallucinationDetectionPipeline — central orchestrator connecting every component.
 
-Upgrades over v1:
-  • ClaimCache + CrossEncoderReranker injected and shared across requests
-  • asyncio.Semaphore limits concurrent pipeline executions (max_workers)
-  • RetrievalMetadata attached to audit for full retrieval audit trail
-  • Cache hit stats logged per request
+Full data flow:
+  text
+    → ClaimExtractor     (spaCy + llama-3.1-8b)  extract structured claims
+    → Verifier           (BM25 + ChromaDB + reranker + web-RAG + llama-3.3-70b)
+    → DecisionEngine     (domain-aware thresholds)
+    → AuditTrail         (append-only JSONL)   ← "done" emitted HERE (hot-path end)
+    → SelfCorrector      (off hot path — "corrected" SSE event arrives later)
+    → HallucinationAudit (returned to caller)
+
+Latency: "done" fires immediately after decisions so SSE clients see results
+at ~45 s instead of ~67 s. Self-correction streams in via "corrected" event.
 """
 import asyncio
 import logging
 import time
-from typing import Optional
+from typing import Any, Callable, Coroutine, Optional
 
 from .audit_trail import AuditTrail
 from .cache import ClaimCache
 from .claim_extractor import ClaimExtractor
 from .config import get_settings
+from .corrector import SelfCorrector
 from .decision_engine import DecisionEngine
 from .knowledge_base import KnowledgeBase
 from .models import HallucinationAudit
+from .mpc_controller import MPCController
 from .reranker import CrossEncoderReranker
 from .verifier import Verifier
 
@@ -27,17 +35,23 @@ logger = logging.getLogger(__name__)
 
 class HallucinationDetectionPipeline:
     """
-    Async pipeline. Instantiate once at server startup, then call
-    ``await pipeline.process(text)`` for each LLM response.
+    Async pipeline — instantiate once at server startup, call
+    ``await pipeline.process(text)`` per request. Thread-safe.
     """
 
     def __init__(self) -> None:
         s = get_settings()
 
+        # --- Knowledge Base (ChromaDB + BM25) ---
         self.knowledge_base = KnowledgeBase()
-        self._cache = ClaimCache()
+
+        # --- Semantic + memory cache ---
+        self._cache = ClaimCache(kb_version_fn=lambda: self.knowledge_base.cache_version)
+
+        # --- Cross-encoder reranker (lazy-loaded on first use) ---
         self._reranker = CrossEncoderReranker(s.reranker_model) if s.reranker_enabled else None
 
+        # --- LLM-backed components ---
         self._extractor = ClaimExtractor()
         self._verifier = Verifier(
             knowledge_base=self.knowledge_base,
@@ -45,19 +59,29 @@ class HallucinationDetectionPipeline:
             reranker=self._reranker,
         )
         self._decision_engine = DecisionEngine()
+        self._corrector = SelfCorrector()
+
+        # --- Optional MPC (off by default) ---
+        self._mpc = MPCController(knowledge_base=self.knowledge_base) if s.mpc_enabled else None
+
+        # --- Audit trail ---
         self._audit = AuditTrail()
 
-        # Limit concurrent pipeline runs to prevent KB / API saturation
+        # Semaphore limits concurrent pipeline runs to prevent KB/API saturation
         self._sem = asyncio.Semaphore(s.max_workers)
 
         logger.info(
             "HallucinationDetectionPipeline ready "
-            "(workers=%d, cache=%s, reranker=%s, ensemble=%s, bm25=%s)",
+            "(workers=%d, cache=%s, reranker=%s, ensemble=%s, "
+            "bm25=%s, corrector=%s, mpc=%s, web_rag=%s)",
             s.max_workers,
             "on" if s.cache_enabled else "off",
             "on" if s.reranker_enabled else "off",
             "on" if s.ensemble_for_critical else "off",
             "on" if s.bm25_enabled else "off",
+            "on" if s.self_correction_enabled else "off",
+            "on" if s.mpc_enabled else "off",
+            "on" if s.web_rag_enabled else "off",
         )
 
     # ------------------------------------------------------------------
@@ -70,22 +94,27 @@ class HallucinationDetectionPipeline:
         *,
         model: str = "",
         request_id: Optional[str] = None,
+        progress_cb: Optional[Callable[[str, dict], Coroutine[Any, Any, None]]] = None,
     ) -> HallucinationAudit:
         """
         Run the full detection pipeline on *text*.
-        Always returns a HallucinationAudit — never raises.
+        Always returns HallucinationAudit — never raises.
+        progress_cb(stage, data) is called at each pipeline stage for SSE streaming.
+        "done" is emitted before self-correction; "corrected" follows when ready.
         """
         async with self._sem:
-            return await self._run(text, model=model, request_id=request_id)
+            return await self._run(
+                text, model=model, request_id=request_id, progress_cb=progress_cb
+            )
 
     def cache_stats(self) -> dict:
         return self._cache.stats()
 
-    def invalidate_cache(self) -> None:
-        self._cache.invalidate_all()
+    async def invalidate_cache(self) -> None:
+        await self._cache.invalidate_all()
 
     # ------------------------------------------------------------------
-    # Internal pipeline
+    # Internal pipeline — all stages
     # ------------------------------------------------------------------
 
     async def _run(
@@ -94,15 +123,25 @@ class HallucinationDetectionPipeline:
         *,
         model: str = "",
         request_id: Optional[str] = None,
+        progress_cb: Optional[Callable[[str, dict], Coroutine[Any, Any, None]]] = None,
     ) -> HallucinationAudit:
         t0 = time.monotonic()
         audit = HallucinationAudit(model=model)
         if request_id:
             audit.request_id = request_id
 
+        async def _emit(stage: str, **data: Any) -> None:
+            if progress_cb is not None:
+                try:
+                    await progress_cb(stage, data)
+                except Exception:
+                    pass
+
         try:
-            # ── 1. Extract claims ──────────────────────────────────────────
+            # ── Stage 1: Extract claims ──────────────────────────────────────
             logger.info("[%s] Extracting claims (%d chars) …", audit.request_id, len(text))
+            await _emit("extracting", chars=len(text), message="Extracting factual claims…")
+
             claims = await self._extractor.extract(text)
             logger.info("[%s] Found %d claim(s)", audit.request_id, len(claims))
 
@@ -111,30 +150,42 @@ class HallucinationDetectionPipeline:
                 audit.original_text = text
                 audit.processing_time_ms = _ms(t0)
                 self._audit.log(audit)
+                await _emit("done", result=audit.model_dump(mode="json"), message="No factual claims detected.")
                 return audit
 
-            # ── 2. Verify claims (returns metadata alongside) ──────────────
+            await _emit(
+                "extracted",
+                count=len(claims),
+                message=f"Found {len(claims)} claim(s) — verifying against knowledge base…",
+            )
+
+            # ── Stage 2: Verify claims ───────────────────────────────────────
             logger.info("[%s] Verifying %d claim(s) …", audit.request_id, len(claims))
-            verified_claims, retrieval_meta = await self._verifier.verify(claims)
+            if progress_cb is not None and get_settings().streaming_enabled:
+                verified_claims, retrieval_meta = await self._verifier.verify_streaming(claims, progress_cb=progress_cb)
+            else:
+                verified_claims, retrieval_meta = await self._verifier.verify(claims)
             audit.retrieval_metadata = retrieval_meta
 
-            # ── 3. Make decisions ──────────────────────────────────────────
+            await _emit(
+                "verified",
+                count=len(verified_claims),
+                message="Verification complete — making decisions…",
+            )
+
+            # ── Stage 3: Make decisions ──────────────────────────────────────
             decisions = self._decision_engine.decide(verified_claims)
             audit.claims = decisions
 
-            # ── 4. Build annotated text ────────────────────────────────────
+            # ── Stage 4: Annotate + finalise + log ──────────────────────────
             annotated = self._decision_engine.annotate_text(text, decisions)
-
-            # ── 5. Finalise ────────────────────────────────────────────────
-            audit.finalize(original_text=text, processing_time_ms=_ms(t0))
             audit.annotated_text = annotated
-
-            # ── 6. Log ─────────────────────────────────────────────────────
+            audit.finalize(original_text=text, processing_time_ms=_ms(t0))
             self._audit.log(audit)
 
             cache_hits = sum(1 for m in retrieval_meta if m.cache_hit)
             logger.info(
-                "[%s] Done — %d claims | %d verified | %d flagged | %d blocked"
+                "[%s] Hot-path done — %d claims | verified=%d flagged=%d blocked=%d"
                 " | confidence=%.2f | cache_hits=%d | %.0fms",
                 audit.request_id,
                 audit.total_claims,
@@ -146,12 +197,62 @@ class HallucinationDetectionPipeline:
                 audit.processing_time_ms,
             )
 
-        except Exception as exc:  # noqa: BLE001
+            # ── Stage 5: Emit "done" BEFORE self-correction ──────────────────
+            # SSE clients receive full results at ~45 s; correction arrives later.
+            await _emit(
+                "done",
+                result=audit.model_dump(mode="json"),
+                message=(
+                    f"Done — {audit.total_claims} claims: "
+                    f"{audit.verified_count} verified, "
+                    f"{audit.flagged_count} flagged, "
+                    f"{audit.blocked_count} blocked."
+                ),
+            )
+
+            # ── Stage 6: Self-correction (off hot path) ──────────────────────
+            # Runs AFTER "done" — "corrected" event arrives incrementally via SSE.
+            s = get_settings()
+            if s.self_correction_enabled and any(
+                d.action.value in ("block", "flag") for d in decisions
+            ):
+                await _emit("correcting", message="Applying self-correction for flagged claims…")
+                try:
+                    corrected = await self._corrector.correct(text, decisions)
+                    if corrected:
+                        audit.corrected_text = corrected
+                        logger.info(
+                            "[%s] Self-correction applied (%d chars)", audit.request_id, len(corrected)
+                        )
+                        await _emit(
+                            "corrected",
+                            corrected_text=corrected,
+                            message="Self-correction applied successfully.",
+                        )
+                except Exception as corr_exc:
+                    logger.warning("[%s] Self-correction failed: %s", audit.request_id, corr_exc)
+
+            # ── Stage 7: MPC refinement (optional) ──────────────────────────
+            if self._mpc is not None:
+                source_for_mpc = audit.corrected_text or text
+                await _emit("mpc", message="Running MPC receding-horizon refinement…")
+                try:
+                    mpc_result = await self._mpc.run(source_for_mpc)
+                    if mpc_result.corrected_text != source_for_mpc:
+                        audit.corrected_text = mpc_result.corrected_text
+                        logger.info(
+                            "[%s] MPC refined text (%d chars)", audit.request_id, len(audit.corrected_text)
+                        )
+                except Exception as mpc_exc:
+                    logger.warning("[%s] MPC failed: %s", audit.request_id, mpc_exc)
+
+        except Exception as exc:
             logger.error("[%s] Pipeline error: %s", audit.request_id, exc, exc_info=True)
             audit.annotated_text = text
             audit.original_text = text
             audit.processing_time_ms = _ms(t0)
             self._audit.log(audit)
+            await _emit("error", message=f"Pipeline error: {exc}")
 
         return audit
 

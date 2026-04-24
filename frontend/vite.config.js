@@ -6,10 +6,21 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': {
-        target: 'http://localhost:8080',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ''),
+      '/verify': { target: 'http://localhost:80', changeOrigin: true },
+      '/health': { target: 'http://localhost:80', changeOrigin: true },
+      '/audit':  { target: 'http://localhost:80', changeOrigin: true },
+      '/kb':     { target: 'http://localhost:80', changeOrigin: true },
+      '/cache':  { target: 'http://localhost:80', changeOrigin: true },
+      '/v1':     { target: 'http://localhost:80', changeOrigin: true },
+    },
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom', 'react-router-dom'],
+          charts: ['recharts'],
+        },
       },
     },
   },

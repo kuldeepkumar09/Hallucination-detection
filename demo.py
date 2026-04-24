@@ -170,8 +170,8 @@ TEST_CASES = [
 async def run_demo(clear_kb: bool = False) -> None:
     console.print(
         Panel.fit(
-            "[bold cyan]Hallucination Detection Middleware v2[/bold cyan]\n"
-            "[dim]Real-time LLM output verification via RAG + Claude[/dim]",
+            "[bold cyan]Hallucination Detection Middleware v3[/bold cyan]\n"
+            "[dim]Real-time verification: ChromaDB + Web-RAG + Domain Thresholds + Self-Correction[/dim]",
             box=box.DOUBLE_EDGE,
             padding=(0, 2),
         )
@@ -269,8 +269,20 @@ async def run_demo(clear_kb: bool = False) -> None:
                 )
             console.print(tbl)
 
-        # Annotated output (only if different from original)
-        if audit.annotated_text.strip() != tc["text"].strip():
+        # Before/after self-correction side-by-side panel
+        if audit.corrected_text and audit.corrected_text.strip() != tc["text"].strip():
+            console.print(
+                Panel(
+                    f"[bold red]ORIGINAL (with hallucinations):[/bold red]\n"
+                    f"[dim]{tc['text'].strip()}[/dim]\n\n"
+                    f"[bold green]CORRECTED (self-corrected):[/bold green]\n"
+                    f"{audit.corrected_text.strip()}",
+                    title="[cyan]Self-Correction — Before vs After[/cyan]",
+                    border_style="cyan",
+                    box=box.DOUBLE_EDGE,
+                )
+            )
+        elif audit.annotated_text.strip() != tc["text"].strip():
             console.print(
                 Panel(
                     audit.annotated_text,

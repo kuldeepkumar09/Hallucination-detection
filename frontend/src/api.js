@@ -1,10 +1,23 @@
-const BASE = 'http://localhost:8080'
+// Empty default → relative paths → Vite proxy in dev, same-origin in production (nginx)
+const BASE = import.meta.env.VITE_API_BASE ?? ''
+
+// API key stored in localStorage — set via Settings page
+const getApiKey = () => localStorage.getItem('api_key') || ''
 
 async function apiFetch(path, options = {}, timeoutMs = 30000) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
+  
+  // Add API key to headers if available
+  const apiKey = getApiKey()
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(options.headers || {}),
+    ...(apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {}),
+  }
+  
   try {
-    const res = await fetch(`${BASE}${path}`, { ...options, signal: controller.signal })
+    const res = await fetch(`${BASE}${path}`, { ...options, headers, signal: controller.signal })
     clearTimeout(timer)
     if (!res.ok) {
       let detail
@@ -50,11 +63,11 @@ export const ingestUrl = (url, source) =>
     body: JSON.stringify({ url, source }),
   }, 60000)
 
-export const ingestWikipedia = (topic, language = 'en') =>
+export const ingestWikipedia = (topic, language = 'en', mode = 'full') =>
   apiFetch('/kb/ingest/wikipedia', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ topic, language }),
+    body: JSON.stringify({ topic, language, mode }),
   }, 60000)
 
 export const deleteDocument = (doc_id) =>
@@ -64,3 +77,5 @@ export const getCacheStats = () => apiFetch('/cache/stats')
 
 export const clearCache = () =>
   apiFetch('/cache/clear', { method: 'POST' })
+
+export const getCategoryStats = () => apiFetch('/audit/stats/categories')

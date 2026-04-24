@@ -12,6 +12,12 @@ echo.
 
 cd /d "%~dp0"
 
+REM Activate virtual environment if it exists
+if exist venv\Scripts\activate.bat (
+    call venv\Scripts\activate.bat
+    echo  [venv activated]
+)
+
 REM Load .env if present
 if exist .env (
     for /f "tokens=1,2 delims==" %%a in (.env) do (
