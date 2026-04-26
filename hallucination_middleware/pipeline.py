@@ -24,6 +24,8 @@ from .claim_extractor import ClaimExtractor
 from .config import get_settings
 from .corrector import SelfCorrector
 from .decision_engine import DecisionEngine
+from .engine.hmm_reliability import get_hmm_tracker
+from .engine.reward_system import RewardSystem
 from .knowledge_base import KnowledgeBase
 from .models import HallucinationAudit
 from .mpc_controller import MPCController
@@ -63,6 +65,17 @@ class HallucinationDetectionPipeline:
 
         # --- Optional MPC (off by default) ---
         self._mpc = MPCController(knowledge_base=self.knowledge_base) if s.mpc_enabled else None
+
+        # --- HMM cascade tracker ---
+        self._hmm = get_hmm_tracker() if s.hmm_enabled else None
+
+        # --- Reward system ---
+        self._reward = RewardSystem(
+            alpha=s.reward_alpha,
+            beta=s.reward_beta,
+            gamma=s.reward_gamma,
+            r0=s.reward_r0,
+        ) if s.reward_system_enabled else None
 
         # --- Audit trail ---
         self._audit = AuditTrail()
@@ -180,8 +193,60 @@ class HallucinationDetectionPipeline:
             # ── Stage 4: Annotate + finalise + log ──────────────────────────
             annotated = self._decision_engine.annotate_text(text, decisions)
             audit.annotated_text = annotated
+
+            # ── Stage 4b: HMM cascade detection ─────────────────────────────
+            if self._hmm is not None and decisions and len(decisions) >= 4:
+                conf_scores = [d.verified_claim.confidence for d in decisions]
+                hmm_result = self._hmm.analyze(conf_scores)
+                audit.hmm_states = hmm_result["states"]
+                audit.hmm_state_labels = hmm_result["state_labels"]
+                audit.cascade_point = hmm_result["cascade_point"] if hmm_result["cascade_point"] >= 0 else None
+                audit.reliability_score = hmm_result["reliability_score"]
+                audit.has_cascade = hmm_result["has_cascade"]
+                audit.ttd = hmm_result["ttd"]
+                if hmm_result["has_cascade"]:
+                    logger.info(
+                        "[%s] HMM cascade at claim %d — reliability=%.2f",
+                        audit.request_id, hmm_result["cascade_point"],
+                        hmm_result["reliability_score"],
+                    )
+
+            # ── Stage 4c: Reward system scoring ──────────────────────────────
+            if self._reward is not None and decisions:
+                conf_scores = [d.verified_claim.confidence for d in decisions]
+                statuses = [d.verified_claim.status.value for d in decisions]
+                reward_result = self._reward.score_sequence(conf_scores, statuses)
+                audit.reward_score = reward_result["total_reward"]
+                audit.reward_breakdown = reward_result
+
+            # ── Stage 4d: Reward feedback — escalate decisions ───────────────
+            # Claims with strongly negative per-claim reward get escalated.
+            # This gives the RARL system real downstream influence.
+            if self._reward is not None and decisions and audit.reward_breakdown:
+                from .models import DecisionAction  # noqa: PLC0415
+                per_claim = audit.reward_breakdown.get("per_claim", [])
+                for i, (decision, reward_item) in enumerate(zip(decisions, per_claim)):
+                    r = reward_item.get("reward", 0.0)
+                    # Skip escalation for unverifiable claims — KB may be sparse, not a contradiction
+                    if decision.verified_claim.status.value == "unverifiable":
+                        continue
+                    # Confident hallucination (reward < -0.5): ANNOTATE → FLAG
+                    if r < -0.5 and decision.action == DecisionAction.ANNOTATE:
+                        decisions[i] = decision.__class__(
+                            verified_claim=decision.verified_claim,
+                            action=DecisionAction.FLAG,
+                            annotation=decision.annotation + f" [RARL escalated: reward={r:.3f}]",
+                        )
+                    # Severe penalty (reward < -0.8): FLAG → BLOCK (only for contradicted claims)
+                    elif r < -0.8 and decision.action == DecisionAction.FLAG and decision.verified_claim.status.value == "contradicted":
+                        decisions[i] = decision.__class__(
+                            verified_claim=decision.verified_claim,
+                            action=DecisionAction.BLOCK,
+                            annotation=decision.annotation + f" [RARL escalated: reward={r:.3f}]",
+                        )
+                audit.claims = decisions
+
             audit.finalize(original_text=text, processing_time_ms=_ms(t0))
-            self._audit.log(audit)
 
             cache_hits = sum(1 for m in retrieval_meta if m.cache_hit)
             logger.info(
@@ -245,6 +310,8 @@ class HallucinationDetectionPipeline:
                         )
                 except Exception as mpc_exc:
                     logger.warning("[%s] MPC failed: %s", audit.request_id, mpc_exc)
+
+            self._audit.log(audit)
 
         except Exception as exc:
             logger.error("[%s] Pipeline error: %s", audit.request_id, exc, exc_info=True)

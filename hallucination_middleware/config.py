@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     nvidia_nim_base_url: str = "https://integrate.api.nvidia.com/v1"
     nvidia_nim_api_key: str = ""
 
+    # ---- Together AI (automatic fallback when Anthropic hits rate limits) ----
+    together_api_key: str = ""
+    together_base_url: str = "https://api.together.xyz/v1"
+    together_extractor_model: str = "meta-llama/Llama-3.1-8B-Instruct-Turbo"
+    together_verifier_model: str = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+    fallback_enabled: bool = True
+
     # ---- Proxy server ----
     proxy_host: str = "0.0.0.0"
     proxy_port: int = 8080
@@ -47,15 +54,14 @@ class Settings(BaseSettings):
     block_threshold: float = 0.50
     flag_threshold: float = 0.60
 
-    # ---- Domain-specific thresholds (override global per claim category) ----
-    # Lowered from paranoid defaults (0.95/0.97) to practical values that allow
-    # well-supported domain claims to pass while still blocking clear errors.
+    # ---- Domain-specific thresholds (calibrated for Claude Haiku/Sonnet) ----
+    # Claude outputs well-calibrated confidence 0.70-0.95 for correct facts.
     # Keys: MEDICAL | LEGAL | FINANCIAL | GENERAL
     domain_block_thresholds: dict = {
-        "MEDICAL": 0.82, "LEGAL": 0.76, "FINANCIAL": 0.70, "GENERAL": 0.40
+        "MEDICAL": 0.65, "LEGAL": 0.60, "FINANCIAL": 0.58, "GENERAL": 0.40
     }
     domain_flag_thresholds: dict = {
-        "MEDICAL": 0.88, "LEGAL": 0.82, "FINANCIAL": 0.76, "GENERAL": 0.60
+        "MEDICAL": 0.75, "LEGAL": 0.70, "FINANCIAL": 0.65, "GENERAL": 0.55
     }
 
     # ---- Knowledge base (ChromaDB) ----
@@ -69,7 +75,7 @@ class Settings(BaseSettings):
     kb_chunk_overlap: int = 64
 
     # ---- Extraction ----
-    max_claims_per_response: int = 8
+    max_claims_per_response: int = 25
 
     # ---- Annotation ----
     annotate_verified: bool = True
@@ -103,7 +109,7 @@ class Settings(BaseSettings):
 
     # ---- Ensemble (multi-model) verification ----
     ensemble_for_critical: bool = False
-    ensemble_model: str = "phi3:mini"  # Second model for ensemble (can be same or larger)
+    ensemble_model: str = "claude-sonnet-4-6"  # Different from extractor for true diversity
 
     # ---- Self-correction loop ----
     self_correction_enabled: bool = True   # Rewrite flagged/blocked text using evidence
@@ -119,12 +125,26 @@ class Settings(BaseSettings):
 
     # ---- Wikipedia auto-seed ----
     wiki_auto_seed_enabled: bool = True    # Seed KB with starter Wikipedia articles on startup
-    wiki_auto_seed_threshold: int = 1000  # Only seed when KB has fewer than this many chunks
+    wiki_auto_seed_threshold: int = 5000  # Seed until KB has at least this many chunks
     wiki_auto_seed_topics: str = (         # Comma-separated topics (overridable in .env)
-        "Albert Einstein,DNA,Climate change,Vaccination,World War II,"
-        "Artificial intelligence,Internet,COVID-19 pandemic,Diabetes mellitus,"
-        "Inflation,United States Constitution,Python (programming language),"
-        "Stock market,French Revolution,Quantum mechanics"
+        # Science & Medicine
+        "Albert Einstein,DNA,Vaccination,COVID-19 pandemic,Diabetes mellitus,"
+        "Penicillin,Cancer,Human brain,Evolution,Quantum mechanics,"
+        "Climate change,Photosynthesis,Black hole,CRISPR,Antibiotic resistance,"
+        # History & Politics
+        "World War II,World War I,French Revolution,Cold War,United Nations,"
+        "American Revolution,Russian Revolution,Holocaust,Civil rights movement,"
+        # Technology
+        "Artificial intelligence,Internet,Python (programming language),"
+        "Blockchain,Machine learning,Semiconductor,Space exploration,Nuclear power,"
+        # Economics & Finance
+        "Inflation,Stock market,Gross domestic product,Federal Reserve,"
+        "Cryptocurrency,Great Depression,Supply chain,Free trade,"
+        # Law & Society
+        "United States Constitution,Human rights,Democracy,Feminism,"
+        "International law,Geneva Convention,Universal Declaration of Human Rights,"
+        # Geography & Culture
+        "Amazon rainforest,Himalayas,Mediterranean Sea,Silk Road"
     )
 
     @property
@@ -138,8 +158,8 @@ class Settings(BaseSettings):
 
     # ---- Streaming verification ----
     streaming_enabled: bool = True          # Enable claim-by-claim streaming
-    streaming_claim_delay: float = 0.5      # Seconds between claim updates (throttling)
-    streaming_batch_size: int = 3           # Process claims in small batches for responsiveness
+    streaming_claim_delay: float = 0.05    # Near-real-time per-claim updates
+    streaming_batch_size: int = 1          # One claim at a time for true live streaming
 
     # ---- Security ----
     # api_key: comma-separated read+verify keys (can call /verify, /audit, /kb/stats, /health)
@@ -170,6 +190,27 @@ class Settings(BaseSettings):
     # Change to e.g. "xx_ent_wiki_sm" (multilingual) or "de_core_news_sm" (German).
     # Install extra models with: python -m spacy download <model_name>
     spacy_language_model: str = "en_core_web_sm"
+
+    # ---- DeBERTa-v3 NLI scorer ----
+    nli_enabled: bool = True
+    nli_model: str = "cross-encoder/nli-deberta-v3-small"
+    nli_confidence_threshold: float = 0.65   # Use NLI result when confidence > this
+
+    # ---- HMM reliability tracker ----
+    hmm_enabled: bool = True
+
+    # ---- Reward system ----
+    reward_system_enabled: bool = True
+    reward_alpha: float = 1.0
+    reward_beta: float = 2.0
+    reward_gamma: float = 2.0
+    reward_r0: float = 0.20
+
+    # ---- Domain ingestion API keys (optional) ----
+    cap_api_key: str = ""       # Caselaw Access Project (legal cases)
+
+    # ---- Coreference resolution ----
+    coref_enabled: bool = True
 
     # ---- Audit ----
     audit_log_path: str = "./audit_trail.jsonl"

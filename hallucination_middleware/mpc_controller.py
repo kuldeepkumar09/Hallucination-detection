@@ -82,6 +82,12 @@ class MPCController:
                 api_key=s.nvidia_nim_api_key,
                 timeout=s.request_timeout,
             )
+        elif s.llm_provider in ("together", "anthropic"):
+            self._client = AsyncOpenAI(
+                base_url=s.together_base_url,
+                api_key=s.together_api_key,
+                timeout=s.request_timeout,
+            )
         else:
             self._client = AsyncOpenAI(
                 base_url=s.ollama_base_url,
@@ -166,7 +172,7 @@ class MPCController:
         )
         try:
             resp = await self._client.chat.completions.create(
-                model=self._settings.verifier_model,
+                model=self._settings.extractor_model,
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},

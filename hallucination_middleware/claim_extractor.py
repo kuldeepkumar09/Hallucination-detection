@@ -195,20 +195,24 @@ class ClaimExtractor:
         else:
             self._anthropic_client = None
 
-        # NVIDIA NIM is OpenAI-compatible — use the same client with NIM base URL
+        # Route primary client by provider
         if s.llm_provider == "nvidia_nim":
-            self._client = AsyncOpenAI(
-                base_url=s.nvidia_nim_base_url,
-                api_key=s.nvidia_nim_api_key,
-                timeout=s.request_timeout,
-            )
+            self._client = AsyncOpenAI(base_url=s.nvidia_nim_base_url, api_key=s.nvidia_nim_api_key, timeout=s.request_timeout)
+        elif s.llm_provider == "together":
+            self._client = AsyncOpenAI(base_url=s.together_base_url, api_key=s.together_api_key, timeout=s.request_timeout)
+            self._anthropic_client = None
         else:
-            self._client = AsyncOpenAI(
-                base_url=s.ollama_base_url,
-                api_key=s.ollama_api_key,
-                timeout=s.request_timeout,
-            )
+            self._client = AsyncOpenAI(base_url=s.ollama_base_url, api_key=s.ollama_api_key, timeout=s.request_timeout)
         self._ollama_request_extra: dict = {}
+
+        # Fallback: NVIDIA NIM when primary=together, Together AI when primary=anthropic/nvidia_nim
+        self._fallback_client = None
+        if s.llm_provider == "together" and s.nvidia_nim_api_key:
+            self._fallback_client = AsyncOpenAI(base_url=s.nvidia_nim_base_url, api_key=s.nvidia_nim_api_key, timeout=s.request_timeout)
+            logger.info("NVIDIA NIM fallback ready for claim extraction")
+        elif s.fallback_enabled and s.together_api_key and s.together_api_key not in ("", "your-together-api-key-here"):
+            self._fallback_client = AsyncOpenAI(base_url=s.together_base_url, api_key=s.together_api_key, timeout=s.request_timeout)
+            logger.info("Together AI fallback ready for claim extraction")
 
     async def extract(self, text: str) -> List[ExtractedClaim]:
         """
@@ -217,6 +221,15 @@ class ClaimExtractor:
         """
         if not text.strip():
             return []
+
+        # Coreference resolution: replace "He/She/It" with explicit referents
+        s = self.settings
+        if s.coref_enabled:
+            try:
+                from .core.coref_handler import resolve_coreferences
+                text = resolve_coreferences(text)
+            except Exception:
+                pass
 
         # Claimify Pipeline
         sentences = _sentence_split(text)
@@ -250,8 +263,9 @@ class ClaimExtractor:
         )
 
         content = ""
-        # NVIDIA NIM hangs on json_object constrained generation for some models — skip it
+        # NVIDIA NIM hangs on json_object constrained generation — skip it; Together AI supports it
         use_json_formats = (False,) if s.llm_provider == "nvidia_nim" else (True, False)
+        last_exc = None
         for use_json_format in use_json_formats:
             try:
                 kwargs: dict = {
@@ -267,11 +281,24 @@ class ClaimExtractor:
                     kwargs["response_format"] = {"type": "json_object"}
                 response = await self._client.chat.completions.create(**kwargs)
                 content = response.choices[0].message.content or ""
+                last_exc = None
                 break
             except Exception as exc:
+                last_exc = exc
                 if not use_json_format:
-                    logger.error("Claim extraction error: %s", exc)
-                    return []
+                    break
+
+        if last_exc is not None:
+            exc_str = str(last_exc).lower()
+            is_fallback_trigger = any(kw in exc_str for kw in (
+                "429", "rate limit", "rate_limit", "overloaded", "529", "503",
+                "credit balance", "billing", "insufficient", "402", "quota", "401",
+            ))
+            if is_fallback_trigger and self._fallback_client is not None:
+                logger.warning("Primary extractor failed (%s) — using fallback", last_exc)
+                return await self._extract_via_fallback(atomic_claims, full_text)
+            logger.error("Claim extraction error: %s", last_exc)
+            return []
 
         data = _extract_json(content)
         raw_claims = data.get("claims", [])
@@ -297,14 +324,60 @@ class ClaimExtractor:
                 tools=[CLAIM_EXTRACTION_TOOL],
                 tool_choice={"type": "tool", "name": "extract_factual_claims"},
             )
+            for block in response.content:
+                if block.type == "tool_use" and block.name == "extract_factual_claims":
+                    return self._parse_claims(block.input.get("claims", []), text)
+            return []
         except Exception as exc:
+            exc_str = str(exc).lower()
+            is_fallback_trigger = any(kw in exc_str for kw in (
+                "429", "rate limit", "rate_limit", "overloaded", "529", "503",
+                "credit balance", "billing", "insufficient", "402", "quota",
+            ))
+            if is_fallback_trigger and self._fallback_client is not None:
+                logger.warning("Primary extraction failed (%s) — using fallback", exc)
+                sentences = _sentence_split(text)
+                selected = _selection(sentences)
+                atomic_claims = _decomposition(selected)
+                return await self._extract_via_fallback(atomic_claims, text)
             logger.error("Claim extraction API error: %s", exc)
             return []
 
-        for block in response.content:
-            if block.type == "tool_use" and block.name == "extract_factual_claims":
-                return self._parse_claims(block.input.get("claims", []), text)
-        return []
+    async def _extract_via_fallback(self, atomic_claims: List[str], text: str) -> List[ExtractedClaim]:
+        """Fallback extraction using the secondary client (NIM or Together AI)."""
+        s = self.settings
+        hint = "\n".join(f"- {c}" for c in atomic_claims[:s.max_claims_per_response])
+        _MAX_TEXT = 12_000
+        text_for_llm = text if len(text) <= _MAX_TEXT else text[:_MAX_TEXT]
+        user_msg = (
+            f"Text:\n{text_for_llm}\n\n"
+            f"Candidate factual sentences (pre-filtered):\n{hint}\n\n"
+            "Extract all verifiable claims. Return ONLY the JSON object."
+        )
+        # Pick fallback model name based on which provider is fallback
+        if s.llm_provider == "together":
+            fallback_model = "meta/llama-3.1-8b-instruct"  # NIM model name
+        else:
+            fallback_model = s.together_extractor_model
+        try:
+            response = await self._fallback_client.chat.completions.create(
+                model=fallback_model,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": user_msg},
+                ],
+                temperature=0.0,
+            )
+            content = response.choices[0].message.content or ""
+            data = _extract_json(content)
+            raw_claims = data.get("claims", [])
+            if not raw_claims:
+                logger.warning("Fallback extractor returned no claims. Raw: %s", content[:200])
+            logger.info("Fallback extraction succeeded (%d claims, model=%s)", len(raw_claims), fallback_model)
+            return self._parse_claims(raw_claims, text)
+        except Exception as exc:
+            logger.error("Fallback extraction also failed: %s", exc)
+            return []
 
     # ------------------------------------------------------------------
     # Shared parser

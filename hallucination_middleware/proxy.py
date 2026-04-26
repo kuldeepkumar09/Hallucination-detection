@@ -217,7 +217,7 @@ async def _seed_wikipedia_if_empty() -> None:
         from .wikipedia_ingest import ingest_from_wikipedia  # noqa: PLC0415
         for i, topic in enumerate(topics):
             try:
-                chunks = await asyncio.to_thread(ingest_from_wikipedia, topic, "en", kb, "full")
+                chunks = await asyncio.to_thread(ingest_from_wikipedia, topic, "en", kb, "summary")
                 logger.info("[Startup] Wikipedia '%s': %d chunks", topic, chunks)
             except Exception as exc:
                 logger.warning("[Startup] Wikipedia '%s' failed: %s", topic, exc)
@@ -319,6 +319,10 @@ async def _check_llm_reachability(s) -> dict:
             if not s.anthropic_api_key:
                 return {"ok": False, "error": "ANTHROPIC_API_KEY not configured"}
             return {"ok": True}
+        if s.llm_provider == "together":
+            if not s.together_api_key:
+                return {"ok": False, "error": "TOGETHER_API_KEY not configured"}
+            return {"ok": True}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
     return {"ok": True}
@@ -331,9 +335,22 @@ async def health() -> JSONResponse:
     llm_status = await _check_llm_reachability(s)
     llm_status["provider"] = s.llm_provider
     overall = "ok" if llm_status["ok"] else "degraded"
+    if s.llm_provider == "together":
+        fallback_ready = bool(s.nvidia_nim_api_key)
+        fallback_provider = "NVIDIA NIM" if fallback_ready else "none"
+        fallback_trigger = "Together AI 429/503 rate-limit"
+    else:
+        fallback_ready = bool(s.fallback_enabled and s.together_api_key and s.together_api_key != "your-together-api-key-here")
+        fallback_provider = "Together AI" if fallback_ready else "none"
+        fallback_trigger = f"{s.llm_provider.upper()} 429/503 rate-limit"
     return JSONResponse({
         "status": overall,
         "llm": llm_status,
+        "fallback": {
+            "enabled": fallback_ready,
+            "provider": fallback_provider,
+            "trigger": fallback_trigger,
+        },
         "knowledge_base": kb.stats(),
         "cache": _pipeline_().cache_stats(),
         "audit": _audit_().get_stats(),
@@ -795,6 +812,36 @@ async def kb_ingest_wikipedia(request: Request) -> JSONResponse:
     return JSONResponse({"chunks_added": chunks, "topic": topic, "language": language, "mode": mode})
 
 
+@app.post("/audit/feedback")
+async def submit_feedback(request: Request) -> JSONResponse:
+    """Record user feedback (correct / incorrect) for a specific claim verification."""
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, f"Invalid JSON: {exc}") from exc
+    claim_id = body.get("claim_id", "").strip()
+    is_correct = body.get("is_correct")
+    comment = body.get("comment", "")[:500]
+    if not claim_id:
+        raise HTTPException(400, "claim_id is required")
+    if is_correct is None:
+        raise HTTPException(400, "is_correct (boolean) is required")
+    feedback_entry = {
+        "type": "feedback",
+        "claim_id": claim_id,
+        "is_correct": bool(is_correct),
+        "comment": comment,
+        "timestamp": time.time(),
+    }
+    try:
+        with open(settings.audit_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(feedback_entry) + "\n")
+        logger.info("Feedback logged: claim_id=%s is_correct=%s", claim_id, is_correct)
+    except Exception as exc:
+        logger.warning("Failed to write feedback: %s", exc)
+    return JSONResponse({"status": "ok", "claim_id": claim_id, "is_correct": bool(is_correct)})
+
+
 @app.delete("/kb/documents/{doc_id}", dependencies=[Depends(verify_admin_key)])
 async def kb_delete_document(doc_id: str) -> JSONResponse:
     """Delete all chunks for a given document from the knowledge base."""
@@ -820,7 +867,7 @@ async def spa_root() -> FileResponse:
 @app.get("/{full_path:path}", include_in_schema=False)
 async def spa_catchall(full_path: str) -> Response:
     # API and known paths pass through; everything else → SPA
-    if full_path.startswith(("v1/", "health", "verify", "audit/", "kb/", "cache/")):
+    if full_path.startswith(("v1/", "health", "verify", "audit", "kb/", "cache/", "status/")):
         raise HTTPException(404)
     index = _FRONTEND_DIST / "index.html"
     if index.exists():

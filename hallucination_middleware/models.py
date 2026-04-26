@@ -142,6 +142,21 @@ class HallucinationAudit(BaseModel):
     annotated_text: str = ""
     corrected_text: Optional[str] = None   # Self-corrected version (None if no issues or disabled)
 
+    # ── HMM cascade detection (new) ──────────────────────────────────────────
+    hmm_states: List[int] = []                    # 0=Reliable, 1=Hallucinating per claim
+    hmm_state_labels: List[str] = []              # ["Reliable", "Hallucinating", ...]
+    cascade_point: Optional[int] = None           # Claim index where drift begins (-1 = none)
+    reliability_score: Optional[float] = None     # Fraction of Reliable states [0-1]
+    has_cascade: bool = False                     # True if hallucination cascade detected
+    ttd: Optional[int] = None                     # Time-to-Detection (sentences until cascade)
+
+    # ── Reward system (new) ──────────────────────────────────────────────────
+    reward_score: Optional[float] = None          # Total reward (higher = better)
+    reward_breakdown: Optional[dict] = None       # Per-claim reward details
+
+    # ── NLI verification (new) ───────────────────────────────────────────────
+    nli_used: bool = False                        # Whether DeBERTa NLI was used
+
     def finalize(self, original_text: str = "", processing_time_ms: float = 0.0) -> None:
         self.total_claims = len(self.claims)
         self.verified_count = sum(

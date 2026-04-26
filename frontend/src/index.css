@@ -192,6 +192,40 @@
   .page-enter {
     animation: page-enter 0.22s ease;
   }
+
+  /* ── Glassmorphism ──────────────────────────────────────────────── */
+  .glass-card {
+    background: rgba(15, 23, 42, 0.55);
+    backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 14px;
+  }
+
+  /* ── Gradient text ──────────────────────────────────────────────── */
+  .gradient-text {
+    background: linear-gradient(135deg, #38bdf8 0%, #818cf8 50%, #34d399 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* ── Stats pill ─────────────────────────────────────────────────── */
+  .stats-pill {
+    @apply flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  /* ── Claim card (animated) ──────────────────────────────────────── */
+  .claim-card-new {
+    opacity: 0;
+    animation: claim-card-enter 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+  }
+
+  /* ── Pipeline dot pulse ─────────────────────────────────────────── */
+  .pipeline-dot-active {
+    animation: pipeline-pulse 1.5s ease-in-out infinite;
+  }
 }
 
 /* ── Keyframes ───────────────────────────────────────────────────────── */
@@ -258,3 +292,28 @@
 
 /* Recharts overrides */
 .recharts-tooltip-cursor { fill: rgba(255,255,255,0.03); }
+
+/* Grid background overlay on page-bg */
+.page-bg {
+  background-image:
+    radial-gradient(ellipse 70% 40% at 50% 0%, rgba(56,189,248,0.07) 0%, transparent 60%),
+    linear-gradient(rgba(255,255,255,0.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.018) 1px, transparent 1px);
+  background-size: auto, 48px 48px, 48px 48px;
+}
+
+@keyframes claim-card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes pipeline-pulse {
+  0%, 100% { box-shadow: 0 0 8px rgba(56,189,248,0.4); }
+  50%       { box-shadow: 0 0 22px rgba(56,189,248,0.85); }
+}

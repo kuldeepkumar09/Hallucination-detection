@@ -52,19 +52,21 @@ class SelfCorrector:
         else:
             self._anthropic_client = None
 
-        # NVIDIA NIM is OpenAI-compatible — same client, different base URL
+        # Route primary client by provider
         if s.llm_provider == "nvidia_nim":
-            self._client = AsyncOpenAI(
-                base_url=s.nvidia_nim_base_url,
-                api_key=s.nvidia_nim_api_key,
-                timeout=s.request_timeout,
-            )
+            self._client = AsyncOpenAI(base_url=s.nvidia_nim_base_url, api_key=s.nvidia_nim_api_key, timeout=s.request_timeout)
+        elif s.llm_provider == "together":
+            self._client = AsyncOpenAI(base_url=s.together_base_url, api_key=s.together_api_key, timeout=s.request_timeout)
+            self._anthropic_client = None
         else:
-            self._client = AsyncOpenAI(
-                base_url=s.ollama_base_url,
-                api_key=s.ollama_api_key,
-                timeout=s.request_timeout,
-            )
+            self._client = AsyncOpenAI(base_url=s.ollama_base_url, api_key=s.ollama_api_key, timeout=s.request_timeout)
+
+        # Fallback: NVIDIA NIM when primary=together, Together AI otherwise
+        self._fallback_client = None
+        if s.llm_provider == "together" and s.nvidia_nim_api_key:
+            self._fallback_client = AsyncOpenAI(base_url=s.nvidia_nim_base_url, api_key=s.nvidia_nim_api_key, timeout=s.request_timeout)
+        elif s.fallback_enabled and s.together_api_key and s.together_api_key not in ("", "your-together-api-key-here"):
+            self._fallback_client = AsyncOpenAI(base_url=s.together_base_url, api_key=s.together_api_key, timeout=s.request_timeout)
 
     async def correct(
         self,
@@ -139,7 +141,7 @@ class SelfCorrector:
         for attempt in range(3):
             try:
                 response = await self._client.chat.completions.create(
-                    model=s.verifier_model,
+                    model=s.extractor_model,
                     messages=[
                         {"role": "system", "content": CORRECTION_SYSTEM},
                         {"role": "user", "content": prompt},
@@ -164,7 +166,7 @@ class SelfCorrector:
         for attempt in range(3):
             try:
                 response = await self._anthropic_client.messages.create(
-                    model=s.verifier_model,
+                    model=s.extractor_model,
                     max_tokens=4096,
                     system=CORRECTION_SYSTEM,
                     messages=[{"role": "user", "content": prompt}],
@@ -174,6 +176,25 @@ class SelfCorrector:
                     logger.info("Self-correction (Anthropic) applied (%d chars)", len(corrected))
                     return corrected
             except Exception as exc:
+                exc_str = str(exc).lower()
+                is_rate_limit = any(kw in exc_str for kw in ("429", "rate limit", "rate_limit", "overloaded", "529", "503", "credit balance", "billing", "insufficient", "402", "quota"))
+                if is_rate_limit and self._fallback_client is not None:
+                    logger.warning("Anthropic rate-limited in corrector — using Together AI fallback")
+                    try:
+                        fb_resp = await self._fallback_client.chat.completions.create(
+                            model=s.together_extractor_model,
+                            messages=[
+                                {"role": "system", "content": CORRECTION_SYSTEM},
+                                {"role": "user", "content": prompt},
+                            ],
+                            temperature=0.1,
+                        )
+                        corrected = (fb_resp.choices[0].message.content or "").strip()
+                        if corrected:
+                            logger.info("Self-correction (Together AI fallback) applied (%d chars)", len(corrected))
+                            return corrected
+                    except Exception as fb_exc:
+                        logger.warning("Together AI corrector fallback failed: %s", fb_exc)
                 wait = 2 ** attempt
                 if attempt < 2:
                     logger.warning("Correction (Anthropic) attempt %d failed, retrying in %ds: %s", attempt + 1, wait, exc)

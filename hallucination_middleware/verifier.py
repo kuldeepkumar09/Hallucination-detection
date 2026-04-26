@@ -17,6 +17,7 @@ from openai import AsyncOpenAI
 from .cache import ClaimCache
 from .config import get_settings
 from .knowledge_base import KnowledgeBase
+from .nli_scorer import get_nli_scorer
 from .models import (
     ClaimStakes,
     ExtractedClaim,
@@ -129,20 +130,17 @@ class Verifier:
         self._settings = get_settings()
         s = self._settings
 
-        # NVIDIA NIM is OpenAI-compatible — same client, different base URL
+        # Route primary client by provider
         if s.llm_provider == "nvidia_nim":
-            self._client = AsyncOpenAI(
-                base_url=s.nvidia_nim_base_url,
-                api_key=s.nvidia_nim_api_key,
-                timeout=s.request_timeout,
-            )
+            self._client = AsyncOpenAI(base_url=s.nvidia_nim_base_url, api_key=s.nvidia_nim_api_key, timeout=s.request_timeout)
+        elif s.llm_provider == "together":
+            self._client = AsyncOpenAI(base_url=s.together_base_url, api_key=s.together_api_key, timeout=s.request_timeout)
         else:
-            self._client = AsyncOpenAI(
-                base_url=s.ollama_base_url,
-                api_key=s.ollama_api_key,
-                timeout=s.request_timeout,
-            )
+            self._client = AsyncOpenAI(base_url=s.ollama_base_url, api_key=s.ollama_api_key, timeout=s.request_timeout)
         self._ollama_request_extra: dict = {}
+
+        # NLI scorer — DeBERTa-v3, GPU-accelerated, used as fast primary verification
+        self._nli = get_nli_scorer() if s.nli_enabled else None
 
         # Anthropic native client — used when llm_provider=anthropic
         self._anthropic_client = None
@@ -152,6 +150,15 @@ class Verifier:
                 self._anthropic_client = _anthropic.AsyncAnthropic(api_key=s.anthropic_api_key)
             except ImportError:
                 logger.warning("anthropic package not installed; falling back to Ollama client")
+
+        # Fallback client: Together AI when primary=anthropic/nvidia_nim, NVIDIA NIM when primary=together
+        self._fallback_client = None
+        if s.llm_provider == "together" and s.nvidia_nim_api_key:
+            self._fallback_client = AsyncOpenAI(base_url=s.nvidia_nim_base_url, api_key=s.nvidia_nim_api_key, timeout=s.request_timeout)
+            logger.info("NVIDIA NIM fallback client ready for verifier")
+        elif s.fallback_enabled and s.together_api_key and s.together_api_key not in ("", "your-together-api-key-here"):
+            self._fallback_client = AsyncOpenAI(base_url=s.together_base_url, api_key=s.together_api_key, timeout=s.request_timeout)
+            logger.info("Together AI fallback client ready for verifier")
 
     # ------------------------------------------------------------------
     # Unified LLM call (routes to Anthropic SDK or OpenAI-compatible)
@@ -209,10 +216,38 @@ class Verifier:
                 return response.choices[0].message.content or ""
 
             except (asyncio.TimeoutError, Exception) as exc:
-                # Don't retry auth errors
                 exc_str = str(exc).lower()
+                # Don't retry auth errors
                 if any(kw in exc_str for kw in ("401", "403", "unauthorized", "forbidden", "api key")):
                     raise
+                # Rate-limit or overload: try Together AI fallback immediately
+                is_rate_limit = any(kw in exc_str for kw in ("429", "rate limit", "rate_limit", "overloaded", "529", "503", "credit balance", "billing", "insufficient", "402", "quota"))
+                if is_rate_limit and self._fallback_client is not None:
+                    logger.warning("Primary LLM rate-limited — switching to fallback")
+                    try:
+                        s = self._settings
+                        # When primary=together, fallback is NIM (use NIM model names)
+                        if s.llm_provider == "together":
+                            fallback_model = "meta/llama-3.3-70b-instruct" if model == s.verifier_model else "meta/llama-3.1-8b-instruct"
+                        else:
+                            fallback_model = (
+                                s.together_verifier_model if model == s.verifier_model
+                                else s.together_extractor_model
+                            )
+                        response = await asyncio.wait_for(
+                            self._fallback_client.chat.completions.create(
+                                model=fallback_model,
+                                messages=messages,
+                                temperature=temperature,
+                            ),
+                            timeout=timeout,
+                        )
+                        result = response.choices[0].message.content or ""
+                        if result:
+                            logger.info("Together AI fallback succeeded (model=%s)", fallback_model)
+                            return result
+                    except Exception as fb_exc:
+                        logger.warning("Together AI fallback also failed: %s", fb_exc)
                 if attempt == max_retries - 1:
                     raise
                 delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
@@ -299,9 +334,10 @@ class Verifier:
 
         verified_uncached: List[Optional[VerifiedClaim]] = [None] * len(uncached_claims)
 
-        # Process claims in batches for streaming
-        batch_size = s.streaming_batch_size
+        # Non-streaming: verify all claims in one batch (single LLM call = faster)
+        # Streaming: one claim at a time for live progress updates
         all_indices = standard_idx + ensemble_idx
+        batch_size = s.streaming_batch_size if progress_cb is not None else max(len(all_indices), 1)
         
         for i in range(0, len(all_indices), batch_size):
             batch_indices = all_indices[i:i + batch_size]
@@ -454,7 +490,77 @@ class Verifier:
     # Batch LLM verification
     # ------------------------------------------------------------------
 
+    async def _nli_verify(
+        self,
+        claims: List[ExtractedClaim],
+        claim_docs: List[List[Dict]],
+    ) -> List[VerifiedClaim]:
+        """Fast DeBERTa-v3 NLI verification. Returns results only when confidence is high enough."""
+        s = self._settings
+        if self._nli is None:
+            return [None] * len(claims)  # type: ignore
+
+        results: List[VerifiedClaim | None] = []
+        for claim, docs in zip(claims, claim_docs):
+            if not docs:
+                results.append(None)
+                continue
+            excerpts = [d["excerpt"] for d in docs[:5]]
+            conf, status = self._nli.best_score(claim.normalized, excerpts)
+            if conf >= s.nli_confidence_threshold:
+                best_doc = docs[0] if docs else {}
+                results.append(VerifiedClaim(
+                    claim=claim,
+                    status=VerificationStatus(status),
+                    confidence=round(conf, 3),
+                    supporting_docs=[
+                        SupportingDocument(
+                            doc_id=d.get("doc_id", "nli"),
+                            source=d.get("source", "NLI"),
+                            excerpt=d.get("excerpt", "")[:300],
+                            relevance_score=d.get("relevance_score", 0.0),
+                        )
+                        for d in docs[:3]
+                    ],
+                    verification_reasoning=f"DeBERTa-v3 NLI: {status} (confidence {conf:.2f})",
+                    key_evidence=docs[0]["excerpt"][:150] if docs else "",
+                ))
+            else:
+                results.append(None)  # Fall through to LLM
+        return results  # type: ignore
+
     async def _batch_verify(
+        self,
+        claims: List[ExtractedClaim],
+        claim_docs: List[List[Dict]],
+        model: str,
+    ) -> List[VerifiedClaim]:
+        if not claims:
+            return []
+
+        # Fast path: DeBERTa-v3 NLI (GPU) — use when confidence is high
+        s = self._settings
+        if s.nli_enabled and self._nli is not None:
+            nli_results = await self._nli_verify(claims, claim_docs)
+            high_conf_indices = [i for i, r in enumerate(nli_results) if r is not None]
+            llm_indices = [i for i, r in enumerate(nli_results) if r is None]
+
+            if llm_indices:
+                llm_claims = [claims[i] for i in llm_indices]
+                llm_docs = [claim_docs[i] for i in llm_indices]
+                llm_results = await self._batch_verify_llm(llm_claims, llm_docs, model)
+                for local_i, global_i in enumerate(llm_indices):
+                    nli_results[global_i] = llm_results[local_i]
+
+            logger.info(
+                "NLI fast-path: %d/%d claims resolved (LLM used for %d)",
+                len(high_conf_indices), len(claims), len(llm_indices),
+            )
+            return [r for r in nli_results]  # type: ignore
+
+        return await self._batch_verify_llm(claims, claim_docs, model)
+
+    async def _batch_verify_llm(
         self,
         claims: List[ExtractedClaim],
         claim_docs: List[List[Dict]],

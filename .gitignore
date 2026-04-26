@@ -54,3 +54,5 @@ htmlcov/
 
 # Docker
 *.pid
+# Pip install artifacts (=0.3.0 etc)
+=*

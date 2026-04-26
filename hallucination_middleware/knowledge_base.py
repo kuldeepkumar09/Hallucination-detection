@@ -214,6 +214,17 @@ class KnowledgeBase:
             raise ValueError(f"Text appears to contain binary content (source={source})")
 
         doc_id = doc_id or hashlib.md5(text[:256].encode()).hexdigest()[:12]
+
+        # Fast dedup: skip if first chunk of this doc_id already exists
+        if self._col.count() > 0:
+            try:
+                probe = self._col.get(ids=[f"{doc_id}__c0"], include=[])
+                if probe and probe.get("ids"):
+                    logger.debug("Skipping ingest — doc_id=%s already indexed", doc_id)
+                    return 0
+            except Exception:
+                pass  # On error, proceed with ingestion
+
         chunks = _chunk_text(
             text,
             self._settings.kb_chunk_size,

@@ -40,7 +40,8 @@ RUN grep -v "^torch" requirements.txt > requirements-notorch.txt \
     && pip install --no-cache-dir -r requirements-notorch.txt \
     && python -m spacy download en_core_web_sm \
     && python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')" \
-    && python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
+    && python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')" \
+    && python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/nli-deberta-v3-small')"
 
 # Block HuggingFace network at runtime — models already baked in
 ENV HF_HUB_OFFLINE=1

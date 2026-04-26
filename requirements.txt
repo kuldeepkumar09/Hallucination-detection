@@ -50,16 +50,34 @@ tavily-python>=0.3.0
 ddgs>=9.0.0
 
 # NLP — SpaCy entity extraction
-spacy>=3.7.0
+# 3.7.5 — pydantic v2 compatible; coreferee dropped (requires spacy<3.6/pydantic v1)
+spacy==3.7.5
+thinc==8.2.5
 # After installing: python -m spacy download en_core_web_sm
 
-# Optional: Anthropic (only needed if you switch LLM_PROVIDER=anthropic in .env)
-# anthropic>=0.40.0
+# Anthropic SDK (required when LLM_PROVIDER=anthropic)
+anthropic>=0.40.0
 
 # ---- GPU acceleration (auto-detected at runtime) ----
 # sentence-transformers and ChromaDB embeddings use GPU when torch+CUDA available.
 # Remove this line if you have no NVIDIA GPU — CPU fallback is automatic.
 torch>=2.1.0
+
+# ---- v4 additions ----
+
+# HMM sequence analysis (hallucination cascade detection)
+hmmlearn>=0.3.0
+numpy>=1.26.0
+
+# VRAM monitoring (RTX 3050 hardware guard)
+pynvml>=11.5.0
+
+# SEC EDGAR financial ingestion (optional — graceful fallback if absent)
+# edgartools>=5.30
+
+# Coreference resolution — installed separately in Dockerfile with --no-deps
+# (coreferee 1.4.x declares spacy<3.6.0 but works fine with spacy 3.7.5 at runtime)
+# coreferee>=1.4.0
 
 # ---- Testing ----
 pytest>=8.0.0

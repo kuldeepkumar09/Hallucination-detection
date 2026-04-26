@@ -137,36 +137,31 @@ class DecisionEngine:
     # ------------------------------------------------------------------
 
     def annotate_text(self, original_text: str, decisions: List[ClaimDecision]) -> str:
-        """
-        Append a structured Hallucination Detection Report section to the
-        response text.  The original text is never modified inline — this
-        keeps it readable while providing a full audit trail.
-        """
+        """Append a compact fact-check summary after the original text."""
         issues = [d for d in decisions if d.action in (DecisionAction.FLAG, DecisionAction.BLOCK)]
         verifications = [d for d in decisions if d.action == DecisionAction.ANNOTATE]
 
         if not issues and not verifications:
             return original_text
 
-        lines: List[str] = [original_text, "\n\n---\n## Hallucination Detection Report\n"]
+        lines: List[str] = [original_text, "\n\n---\n"]
 
-        if issues:
-            lines.append("### [!] Issues\n")
-            for d in issues:
-                icon = "[BLOCK]" if d.action == DecisionAction.BLOCK else "[FLAG]"
-                preview = d.verified_claim.claim.text
-                if len(preview) > 70:
-                    preview = preview[:67] + "..."
-                lines.append(f'{icon} **[{d.action.value.upper()}]** "{preview}"\n')
-                lines.append(f"   -> {d.annotation}\n\n")
+        for d in issues:
+            icon = "✗" if d.action == DecisionAction.BLOCK else "⚠"
+            preview = d.verified_claim.claim.text
+            if len(preview) > 80:
+                preview = preview[:77] + "…"
+            reason = d.annotation.split(":", 1)[-1].strip() if ":" in d.annotation else d.annotation
+            if len(reason) > 100:
+                reason = reason[:97] + "…"
+            lines.append(f'{icon} [{d.action.value.upper()}] "{preview}" — {reason}\n')
 
         if verifications and self._settings.annotate_verified:
-            lines.append("### [OK] Verified Claims\n")
             for d in verifications:
                 preview = d.verified_claim.claim.text
-                if len(preview) > 70:
-                    preview = preview[:67] + "..."
-                lines.append(f'[OK] "{preview}"\n')
-                lines.append(f"   -> {d.annotation}\n\n")
+                if len(preview) > 80:
+                    preview = preview[:77] + "…"
+                sources = ", ".join(s.source for s in d.verified_claim.supporting_docs[:2]) or "KB"
+                lines.append(f'✓ [OK] "{preview}" — {sources}\n')
 
         return "".join(lines)
