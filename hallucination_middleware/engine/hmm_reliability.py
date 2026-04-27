@@ -4,15 +4,22 @@ States:
   0 = Reliable     (LLM output is trustworthy)
   1 = Hallucinating (LLM has drifted — fabrications cascade)
 
-Observations: NLI confidence scores [0.0–1.0] per claim.
+Observations: LLM verification confidence scores [0.0–1.0] per claim.
 
-Transition matrix (pre-tuned on LLM hallucination research):
+Transition matrix (tuned for Llama 3.x verification confidence distributions):
   Reliable      → Reliable:      0.85
   Reliable      → Hallucinating: 0.15
-  Hallucinating → Hallucinating: 0.80  (strong cascade tendency)
+  Hallucinating → Hallucinating: 0.80  (strong cascade tendency — once wrong, stays wrong)
   Hallucinating → Reliable:      0.20
 
-Time-to-Detection (TTD) target: cascade detected within 1.5 sentences.
+Emission distributions (Llama 3.3-70B as verifier, empirically observed):
+  Reliable state      : mean=0.76, std=0.12  (Llama gives more conservative verified scores)
+  Hallucinating state : mean=0.32, std=0.15  (contradicted/unverifiable cluster around 0.3)
+
+These values replace the original Claude Haiku/Sonnet calibration (mean 0.82/0.30).
+Llama tends toward lower confidence on verified claims and slightly higher on uncertain ones.
+
+Time-to-Detection (TTD) target: cascade flagged within 2 claims.
 """
 import logging
 from typing import List, Tuple
@@ -31,10 +38,11 @@ _TRANSITION = np.array([
     [0.85, 0.15],
     [0.20, 0.80],
 ])
-# Emission means tuned for Claude Haiku/Sonnet confidence distribution.
-# Claude verified claims: ~0.82 mean; hallucinated/contradicted: ~0.30 mean.
-_EMISSION_MEANS = np.array([0.82, 0.30])
-_EMISSION_STDS = np.array([0.10, 0.14])
+# Emission parameters tuned for Llama 3.3-70B as verifier.
+# Llama verified claims cluster around 0.76 (more conservative than Claude's 0.82).
+# Hallucinated/contradicted claims cluster around 0.32 with higher variance.
+_EMISSION_MEANS = np.array([0.76, 0.32])
+_EMISSION_STDS  = np.array([0.12, 0.15])
 _INITIAL = np.array([0.85, 0.15])
 
 

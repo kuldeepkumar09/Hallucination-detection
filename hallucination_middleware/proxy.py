@@ -456,6 +456,43 @@ async def cache_clear() -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Benchmark evaluation endpoint
+# ---------------------------------------------------------------------------
+
+@app.post("/evaluate", dependencies=[Depends(verify_api_key)])
+async def evaluate_pipeline(request: Request) -> JSONResponse:
+    """
+    Run the built-in ground-truth benchmark and return precision/recall/F1/accuracy.
+    Optional JSON body: {"max_claims": N} to evaluate on first N benchmark items.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    max_claims = body.get("max_claims", None)
+    if max_claims is not None:
+        try:
+            max_claims = int(max_claims)
+        except (ValueError, TypeError):
+            max_claims = None
+
+    from .evaluation import evaluate_accuracy  # noqa: PLC0415
+    result = await evaluate_accuracy(_pipeline_(), max_claims=max_claims)
+    return JSONResponse({
+        "total_claims": result.total,
+        "precision": round(result.precision, 4),
+        "recall": round(result.recall, 4),
+        "f1": round(result.f1, 4),
+        "accuracy": round(result.accuracy, 4),
+        "true_positives": result.true_positives,
+        "false_positives": result.false_positives,
+        "true_negatives": result.true_negatives,
+        "false_negatives": result.false_negatives,
+        "details": result.details,
+    })
+
+
+# ---------------------------------------------------------------------------
 # Playground / direct verification endpoint
 # ---------------------------------------------------------------------------
 

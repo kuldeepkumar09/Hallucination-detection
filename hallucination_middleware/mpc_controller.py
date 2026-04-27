@@ -26,11 +26,17 @@ logger = logging.getLogger(__name__)
 
 _CANDIDATE_SYSTEM = """\
 You are a precise factual rewriter. You will be given a sentence and context.
-Generate exactly {n} alternative phrasings of the sentence that preserve its meaning
-but are more likely to be factually accurate. Each alternative must be a complete sentence.
-Output ONLY a JSON array of strings, no explanations:
-["alternative 1", "alternative 2", "alternative 3"]
+Rewrite the sentence so it is more likely to be factually accurate, preserving its meaning.
+Output ONLY the rewritten sentence — no explanations, no JSON, no preamble.
 """
+
+# Temperatures spread across low/medium/high to maximise candidate diversity.
+# Three candidates → [0.1, 0.6, 1.0]; four → [0.1, 0.45, 0.75, 1.0]; etc.
+def _candidate_temperatures(n: int) -> List[float]:
+    if n == 1:
+        return [0.3]
+    step = 0.9 / (n - 1)
+    return [round(0.1 + i * step, 2) for i in range(n)]
 
 
 def _split_sentences(text: str) -> List[str]:
@@ -164,31 +170,34 @@ class MPCController:
         )
 
     async def _generate_candidates(self, chunk: str, context: str) -> List[str]:
-        system = _CANDIDATE_SYSTEM.format(n=self._n)
         user = (
             f"Context (preceding text): {context[-500:] if context else 'none'}\n\n"
-            f"Sentence to rewrite: {chunk}\n\n"
-            f"Generate {self._n} factual alternatives."
+            f"Sentence to rewrite: {chunk}"
         )
-        try:
-            resp = await self._client.chat.completions.create(
-                model=self._settings.extractor_model,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                temperature=0.3,
-                max_tokens=512,
-            )
-            content = resp.choices[0].message.content or ""
-            candidates = _extract_string_list(content)
-            # Always include the original as one candidate
-            if chunk not in candidates:
-                candidates = [chunk] + candidates
-            return candidates[:self._n]
-        except Exception as exc:
-            logger.warning("MPC candidate generation failed: %s", exc)
-            return [chunk]
+        temperatures = _candidate_temperatures(self._n)
+
+        async def _one_call(temp: float) -> str:
+            try:
+                resp = await self._client.chat.completions.create(
+                    model=self._settings.extractor_model,
+                    messages=[
+                        {"role": "system", "content": _CANDIDATE_SYSTEM},
+                        {"role": "user", "content": user},
+                    ],
+                    temperature=temp,
+                    max_tokens=256,
+                )
+                return (resp.choices[0].message.content or "").strip()
+            except Exception as exc:
+                logger.warning("MPC candidate (temp=%.2f) failed: %s", temp, exc)
+                return ""
+
+        results = await asyncio.gather(*[_one_call(t) for t in temperatures])
+        candidates = [chunk]  # always include original
+        for r in results:
+            if r and r not in candidates:
+                candidates.append(r)
+        return candidates[:self._n]
 
     async def _score_candidates(self, candidates: List[str]) -> List[MPCCandidate]:
         """Score each candidate by querying the KB — higher avg relevance = lower cost."""

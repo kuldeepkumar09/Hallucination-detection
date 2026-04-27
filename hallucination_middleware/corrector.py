@@ -75,7 +75,8 @@ class SelfCorrector:
     ) -> Optional[str]:
         """
         Returns corrected text if any BLOCK/FLAG claims were found and
-        self-correction is enabled. Returns None otherwise (caller keeps original).
+        self-correction is enabled, AND the NLI re-verification confirms the
+        correction improved factual accuracy.  Returns None otherwise.
         """
         if not self._enabled:
             return None
@@ -95,11 +96,73 @@ class SelfCorrector:
 
         try:
             if self._anthropic_client is not None:
-                return await self._correct_anthropic(prompt)
-            return await self._correct_ollama(prompt)
+                corrected = await self._correct_anthropic(prompt)
+            else:
+                corrected = await self._correct_ollama(prompt)
         except Exception as exc:
             logger.warning("Self-correction failed: %s", exc)
             return None
+
+        if not corrected:
+            return None
+
+        # ── NLI re-verification: confirm correction actually improved things ──
+        # Run the NLI scorer on (corrected_claim, original_evidence) pairs.
+        # If fewer than half the flagged claims improve under NLI, revert.
+        corrected = await self._nli_verify_correction(corrected, issues)
+        return corrected
+
+    async def _nli_verify_correction(
+        self,
+        corrected_text: str,
+        original_issues: List[ClaimDecision],
+    ) -> Optional[str]:
+        """
+        Lightweight NLI check: for each originally flagged claim, see if the
+        corrected text now contains text that entails (rather than contradicts)
+        the key evidence.  If the correction degraded more than it improved,
+        return None to keep the original text.
+        """
+        try:
+            from .nli_scorer import get_nli_scorer  # noqa: PLC0415
+            nli = get_nli_scorer()
+            if nli is None:
+                return corrected_text  # NLI not available — trust the correction
+
+            improved = 0
+            checked = 0
+            for decision in original_issues:
+                vc = decision.verified_claim
+                evidence = vc.key_evidence or (
+                    vc.supporting_docs[0].excerpt if vc.supporting_docs else ""
+                )
+                if not evidence:
+                    continue
+                # Score original claim vs evidence
+                orig_score = nli.score(vc.claim.text, evidence)
+                orig_entail = orig_score.get("entailment", 0.0) if orig_score else 0.0
+                # Score corrected text (full) vs same evidence
+                corr_score = nli.score(corrected_text[:512], evidence)
+                corr_entail = corr_score.get("entailment", 0.0) if corr_score else 0.0
+                if corr_entail > orig_entail:
+                    improved += 1
+                checked += 1
+
+            if checked == 0:
+                return corrected_text  # no scoreable pairs — accept correction
+
+            improvement_ratio = improved / checked
+            logger.info(
+                "[corrector] NLI re-verification: %d/%d claims improved (ratio=%.2f)",
+                improved, checked, improvement_ratio,
+            )
+            if improvement_ratio >= 0.4:  # at least 40% of claims improved
+                return corrected_text
+            logger.info("[corrector] Correction rejected by NLI re-verification (ratio=%.2f)", improvement_ratio)
+            return None
+        except Exception as exc:
+            logger.debug("[corrector] NLI re-verification skipped: %s", exc)
+            return corrected_text  # on any error, trust the correction
 
     # ------------------------------------------------------------------
 

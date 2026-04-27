@@ -195,7 +195,7 @@ class HallucinationDetectionPipeline:
             audit.annotated_text = annotated
 
             # ── Stage 4b: HMM cascade detection ─────────────────────────────
-            if self._hmm is not None and decisions and len(decisions) >= 4:
+            if self._hmm is not None and decisions and len(decisions) >= 3:
                 conf_scores = [d.verified_claim.confidence for d in decisions]
                 hmm_result = self._hmm.analyze(conf_scores)
                 audit.hmm_states = hmm_result["states"]
