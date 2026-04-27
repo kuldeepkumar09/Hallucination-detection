@@ -26,7 +26,7 @@ from .corrector import SelfCorrector
 from .decision_engine import DecisionEngine
 from .engine.hmm_reliability import get_hmm_tracker
 from .engine.reward_system import RewardSystem
-from .knowledge_base import KnowledgeBase
+from .knowledge_base import WebOnlyKB
 from .models import HallucinationAudit
 from .mpc_controller import MPCController
 from .reranker import CrossEncoderReranker
@@ -44,8 +44,8 @@ class HallucinationDetectionPipeline:
     def __init__(self) -> None:
         s = get_settings()
 
-        # --- Knowledge Base (ChromaDB + BM25) ---
-        self.knowledge_base = KnowledgeBase()
+        # --- Knowledge Base (web-only — all evidence from Tavily/DuckDuckGo) ---
+        self.knowledge_base = WebOnlyKB()
 
         # --- Semantic + memory cache ---
         self._cache = ClaimCache(kb_version_fn=lambda: self.knowledge_base.cache_version)

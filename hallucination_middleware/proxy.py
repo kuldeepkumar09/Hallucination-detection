@@ -427,9 +427,8 @@ async def kb_stats() -> JSONResponse:
 
 @app.get("/kb/documents")
 async def kb_documents(limit: int = 500) -> JSONResponse:
-    limit = max(1, min(limit, 2000))
-    docs = _pipeline_().knowledge_base.list_documents()
-    return JSONResponse({"documents": docs[:limit], "total": len(docs), "limit": limit})
+    # Web-only mode: no stored documents — evidence is fetched live per request
+    return JSONResponse({"documents": [], "total": 0, "limit": limit, "mode": "web-only"})
 
 
 @app.get("/status/seed")
@@ -729,79 +728,25 @@ async def verify_stream_sentences(request: Request) -> StreamingResponse:
 # KB management endpoints (for frontend)
 # ---------------------------------------------------------------------------
 
+_WEB_ONLY_MSG = (
+    "Running in web-only mode — all evidence is fetched live from the internet "
+    "(Tavily + DuckDuckGo). Local knowledge base ingestion is disabled."
+)
+
+
 @app.post("/kb/ingest", dependencies=[Depends(verify_admin_key)])
 async def kb_ingest(request: Request) -> JSONResponse:
-    """Ingest text or fetch a URL into the knowledge base."""
-    try:
-        body = await request.json()
-    except Exception as exc:
-        raise HTTPException(400, f"Invalid JSON: {exc}") from exc
-
-    url = body.get("url", "").strip()
-    text = body.get("text", "").strip()
-    source = body.get("source", "")
-    kb = _pipeline_().knowledge_base
-
-    if url:
-        _validate_url(url)
-        source = source or url
-        try:
-            chunks = await kb.ingest_url(url, source=source)
-        except Exception as exc:
-            raise HTTPException(500, f"URL ingestion failed: {exc}") from exc
-        await _pipeline_().invalidate_cache()
-        return JSONResponse({"chunks_added": chunks, "source": source, "type": "url"})
-
-    if text:
-        _validate_text_length(text, "text")
-        source = source or "manual-upload"
-        chunks = kb.ingest_text(text, source=source)
-        await _pipeline_().invalidate_cache()
-        return JSONResponse({"chunks_added": chunks, "source": source, "type": "text"})
-
-    raise HTTPException(400, "Provide either 'text' or 'url' in the request body")
+    return JSONResponse({"status": "web-only", "message": _WEB_ONLY_MSG}, status_code=200)
 
 
 @app.post("/kb/ingest/pdf", dependencies=[Depends(verify_admin_key)])
-async def kb_ingest_pdf(file: UploadFile = File(...), source: Optional[str] = None) -> JSONResponse:
-    """Ingest a PDF file into the knowledge base."""
-    if not file.filename.lower().endswith('.pdf'):
-        raise HTTPException(400, "Only PDF files are supported")
-    
-    try:
-        # Read the PDF file content
-        content = await file.read()
-        
-        # Create a temporary file to use the existing PDF ingestion logic
-        import tempfile
-        import os
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
-            temp_file.write(content)
-            temp_file_path = temp_file.name
-        
-        try:
-            # Use the existing ingest_file method
-            kb = _pipeline_().knowledge_base
-            chunks = kb.ingest_file(temp_file_path)
-            await _pipeline_().invalidate_cache()
-            
-            return JSONResponse({
-                "chunks_added": chunks, 
-                "source": source or file.filename, 
-                "type": "pdf",
-                "filename": file.filename
-            })
-        finally:
-            # Clean up the temporary file
-            os.unlink(temp_file_path)
-            
-    except Exception as exc:
-        raise HTTPException(500, f"PDF ingestion failed: {exc}") from exc
+async def kb_ingest_pdf(request: Request) -> JSONResponse:
+    return JSONResponse({"status": "web-only", "message": _WEB_ONLY_MSG}, status_code=200)
 
 
 @app.get("/kb/search/wikipedia")
 async def kb_search_wikipedia(q: str = "", language: str = "en", n: int = 8) -> JSONResponse:
-    """Search Wikipedia and return matching article titles + descriptions."""
+    """Search Wikipedia and return matching article titles (live query — no ingestion)."""
     if not q.strip():
         raise HTTPException(400, "q (query) parameter is required")
     from .wikipedia_ingest import search_wikipedia  # noqa: PLC0415
@@ -811,7 +756,7 @@ async def kb_search_wikipedia(q: str = "", language: str = "en", n: int = 8) -> 
 
 @app.get("/kb/wikipedia/info")
 async def kb_wikipedia_info(topic: str = "", language: str = "en") -> JSONResponse:
-    """Return metadata about a Wikipedia page (title, summary, sections) without ingesting."""
+    """Return metadata about a Wikipedia page (live query — no ingestion)."""
     if not topic.strip():
         raise HTTPException(400, "topic parameter is required")
     from .wikipedia_ingest import get_page_info  # noqa: PLC0415
@@ -823,30 +768,7 @@ async def kb_wikipedia_info(topic: str = "", language: str = "en") -> JSONRespon
 
 @app.post("/kb/ingest/wikipedia", dependencies=[Depends(verify_admin_key)])
 async def kb_ingest_wikipedia(request: Request) -> JSONResponse:
-    """Ingest a Wikipedia article into the knowledge base by topic title."""
-    try:
-        body = await request.json()
-    except Exception as exc:
-        raise HTTPException(400, f"Invalid JSON: {exc}") from exc
-    topic = body.get("topic", "").strip()
-    language = body.get("language", "en").strip() or "en"
-    mode = body.get("mode", "full").strip()   # "full" | "summary"
-    if not topic:
-        raise HTTPException(400, "topic is required")
-    if mode not in ("full", "summary"):
-        raise HTTPException(400, "mode must be 'full' or 'summary'")
-    try:
-        from .wikipedia_ingest import ingest_from_wikipedia  # noqa: PLC0415
-        kb = _pipeline_().knowledge_base
-        chunks = await asyncio.to_thread(
-            ingest_from_wikipedia, topic, language=language, kb=kb, mode=mode
-        )
-    except Exception as exc:
-        raise HTTPException(500, f"Wikipedia ingestion failed: {exc}") from exc
-    if chunks == 0:
-        raise HTTPException(404, f"Wikipedia page not found or empty: '{topic}'")
-    await _pipeline_().invalidate_cache()
-    return JSONResponse({"chunks_added": chunks, "topic": topic, "language": language, "mode": mode})
+    return JSONResponse({"status": "web-only", "message": _WEB_ONLY_MSG}, status_code=200)
 
 
 @app.post("/audit/feedback")

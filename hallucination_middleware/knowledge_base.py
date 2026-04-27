@@ -492,3 +492,66 @@ class KnowledgeBase:
         tokenized = [_tokenize(d["excerpt"]) for d in self._bm25_docs]
         self._bm25 = BM25Okapi(tokenized)
         logger.debug("BM25 index rebuilt: %d documents", len(self._bm25_docs))
+
+
+# ---------------------------------------------------------------------------
+# Web-only knowledge base — all evidence fetched live from the internet.
+# Drop-in replacement for KnowledgeBase: same public interface, zero local storage.
+# ---------------------------------------------------------------------------
+
+class WebOnlyKB:
+    """
+    Lightweight KB stub for web-only mode.
+
+    Every query hits Tavily (primary) or DuckDuckGo (free fallback) in real time.
+    No ChromaDB, no BM25, no local disk storage, no GPU embedding model.
+    """
+
+    # Constant version — no local state to version
+    cache_version: str = "web-only"
+
+    def __init__(self) -> None:
+        logger.info("[WebOnlyKB] Initialised — all evidence fetched from the live web")
+
+    async def query_async(self, query: str, n_results: int = 5) -> List[Dict]:
+        """Fetch live web results for *query*. Never raises — returns [] on error."""
+        from .web_search import web_search_structured  # noqa: PLC0415
+        try:
+            results = await web_search_structured(query, max_results=n_results)
+            logger.debug("[WebOnlyKB] %d results for: %s", len(results), query[:70])
+            return results
+        except Exception as exc:
+            logger.warning("[WebOnlyKB] query failed: %s", exc)
+            return []
+
+    # ------------------------------------------------------------------
+    # Stub methods — keep interface compatible with KnowledgeBase callers
+    # ------------------------------------------------------------------
+
+    def ingest_text(self, text: str, source: str = "", **kwargs) -> int:
+        logger.info("[WebOnlyKB] ingest_text skipped — web-only mode")
+        return 0
+
+    async def ingest_url(self, url: str, source: Optional[str] = None) -> int:
+        logger.info("[WebOnlyKB] ingest_url skipped — web-only mode")
+        return 0
+
+    def list_documents(self) -> List[Dict]:
+        return []
+
+    def delete_document(self, doc_id: str) -> int:
+        return 0
+
+    def get_document_stats(self) -> Dict:
+        return {"total_chunks": 0, "by_source": {}}
+
+    def clear(self) -> None:
+        pass
+
+    def stats(self) -> Dict:
+        return {
+            "mode": "web-only",
+            "total_documents": 0,
+            "sources": "Tavily (primary) + DuckDuckGo (fallback)",
+            "local_storage": "disabled",
+        }
