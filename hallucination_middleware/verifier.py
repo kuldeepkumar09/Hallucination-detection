@@ -20,6 +20,7 @@ from .knowledge_base import KnowledgeBase
 from .nli_scorer import get_nli_scorer
 from .models import (
     ClaimStakes,
+    ClaimType,
     ExtractedClaim,
     RetrievalMetadata,
     SupportingDocument,
@@ -27,6 +28,7 @@ from .models import (
     VerifiedClaim,
 )
 from .reranker import CrossEncoderReranker
+from .source_credibility import score_documents, validate_contradiction
 from .web_search import web_search_structured
 
 logger = logging.getLogger(__name__)
@@ -284,8 +286,20 @@ class Verifier:
         meta_list: List[Optional[RetrievalMetadata]] = [None] * len(claims)
         uncached_indices: List[int] = []
 
+        _NON_FACTUAL = {ClaimType.OPINION, ClaimType.PREDICTION, ClaimType.CREATIVE}
+
         if s.cache_enabled:
             for i, claim in enumerate(claims):
+                # Non-factual claims skip verification entirely — auto-pass them
+                if claim.claim_type in _NON_FACTUAL:
+                    results[i] = VerifiedClaim(
+                        claim=claim,
+                        status=VerificationStatus.VERIFIED,
+                        confidence=1.0,
+                        verification_reasoning=f"Auto-pass: {claim.claim_type.value} content is not verifiable",
+                    )
+                    meta_list[i] = RetrievalMetadata(claim_id=claim.id, cache_hit=False)
+                    continue
                 cached = await self._cache.get(claim.normalized)
                 if cached is not None:
                     results[i] = cached
@@ -303,7 +317,17 @@ class Verifier:
                 else:
                     uncached_indices.append(i)
         else:
-            uncached_indices = list(range(len(claims)))
+            for i, claim in enumerate(claims):
+                if claim.claim_type in _NON_FACTUAL:
+                    results[i] = VerifiedClaim(
+                        claim=claim,
+                        status=VerificationStatus.VERIFIED,
+                        confidence=1.0,
+                        verification_reasoning=f"Auto-pass: {claim.claim_type.value} content is not verifiable",
+                    )
+                    meta_list[i] = RetrievalMetadata(claim_id=claim.id, cache_hit=False)
+                else:
+                    uncached_indices.append(i)
 
         if not uncached_indices:
             return [r for r in results], [m for m in meta_list]  # type: ignore
@@ -473,6 +497,9 @@ class Verifier:
                 if web_docs:
                     total_retrieved += len(web_docs)
 
+        # Score source credibility and blend into relevance scores
+        merged = score_documents(merged)
+
         if s.reranker_enabled and merged and self._reranker is not None:
             merged = await self._reranker.rerank_async(claim.normalized, merged, top_k=max(s.reranker_top_k, 3))
 
@@ -519,6 +546,7 @@ class Verifier:
                             source=d.get("source", "NLI"),
                             excerpt=d.get("excerpt", "")[:300],
                             relevance_score=d.get("relevance_score", 0.0),
+                            credibility_score=d.get("credibility_score"),
                         )
                         for d in docs[:3]
                     ],
@@ -696,6 +724,19 @@ class Verifier:
                 pass
 
             confidence = max(0.0, min(1.0, float(r.get("confidence", 0.3))))
+            docs_i = claim_docs[i]
+
+            # Contradiction cross-validation: require ≥2 independent domains.
+            # A single low-trust source cannot mark a claim as CONTRADICTED.
+            if status == VerificationStatus.CONTRADICTED:
+                accepted, avg_cred = validate_contradiction(docs_i, threshold=2)
+                if not accepted:
+                    status = VerificationStatus.PARTIALLY_SUPPORTED
+                    confidence = min(confidence, 0.55)
+                else:
+                    # Blend LLM confidence with source credibility
+                    confidence = round(0.7 * confidence + 0.3 * avg_cred, 3)
+
             supporting = [
                 SupportingDocument(
                     doc_id=d["doc_id"],
@@ -703,8 +744,9 @@ class Verifier:
                     excerpt=d["excerpt"][:300],
                     relevance_score=d["relevance_score"],
                     rerank_score=d.get("rerank_score"),
+                    credibility_score=d.get("credibility_score"),
                 )
-                for d in claim_docs[i]
+                for d in docs_i
             ]
             verified.append(VerifiedClaim(
                 claim=claim,

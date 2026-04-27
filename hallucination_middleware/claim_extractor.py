@@ -48,27 +48,62 @@ def _sentence_split(text: str) -> List[Tuple[str, int, int]]:
             offset = end
         return result
 
+_OPINION_MARKERS = {
+    'i think', 'i believe', 'i feel', 'i suggest', 'in my opinion', 'in my view',
+    'it seems', 'it appears', 'arguably', 'perhaps', 'probably', 'possibly',
+    'i would say', 'i would argue', 'one could argue', 'some might say',
+    'it could be', 'it might be', 'many believe', 'some believe',
+    'the best', 'the worst', 'the greatest', 'most beautiful', 'most important',
+    'should', 'ought to', 'must be', 'may be better', 'is better than',
+}
+
+_PREDICTION_MARKERS = {
+    'will be', 'will have', 'will become', 'will increase', 'will decrease',
+    'is expected to', 'are expected to', 'is projected to', 'is forecast to',
+    'is predicted to', 'is likely to', 'is set to', 'is poised to',
+    'by 2025', 'by 2026', 'by 2030', 'in the future', 'in coming years',
+    'next year', 'next decade', 'upcoming', 'anticipated',
+}
+
+_CREATIVE_MARKERS = {
+    'once upon a time', 'in the story', 'in the novel', 'the character',
+    'fictionally', 'hypothetically', 'imagine if', 'suppose that',
+    'in this scenario', 'as a metaphor', 'for the sake of argument',
+    'in a world where', 'if we assume',
+}
+
+_FACTUAL_KEYWORDS = [
+    'is', 'was', 'are', 'were', 'has', 'have', 'had',
+    'contains', 'includes', 'equals', 'amounts to',
+    'developed', 'invented', 'created', 'founded', 'discovered',
+    'born', 'died', 'became', 'won', 'lost', 'published',
+    'located', 'known', 'called', 'named', 'defined',
+    'percent', '%', 'million', 'billion', 'thousand',
+]
+
+
+def _classify_sentence(sent: str) -> str:
+    """Return 'factual' | 'opinion' | 'prediction' | 'creative'."""
+    lower = sent.lower()
+    if any(m in lower for m in _CREATIVE_MARKERS):
+        return 'creative'
+    if any(m in lower for m in _PREDICTION_MARKERS):
+        return 'prediction'
+    if any(m in lower for m in _OPINION_MARKERS):
+        return 'opinion'
+    return 'factual'
+
+
 def _selection(sentences: List[Tuple[str, int, int]]) -> List[Tuple[str, int, int]]:
-    """Stage 2: Selection - keep sentences that look verifiable, drop pure opinion."""
-    factual_keywords = [
-        'is', 'was', 'are', 'were', 'has', 'have', 'had',
-        'contains', 'includes', 'equals', 'amounts to',
-        'developed', 'invented', 'created', 'founded', 'discovered',
-        'born', 'died', 'became', 'won', 'lost', 'published',
-        'located', 'known', 'called', 'named', 'defined',
-        'percent', '%', 'million', 'billion', 'thousand',
-    ]
-    opinion_markers = ['i think', 'in my opinion', 'i believe', 'i feel', 'i suggest']
+    """Stage 2: Selection — keep factual sentences; tag others for auto-PASS."""
     selected = []
     for sent, start, end in sentences:
-        lower_sent = sent.lower()
         if len(sent.strip()) < 10:
             continue
-        if any(word in lower_sent for word in opinion_markers):
-            continue
-        if any(kw in lower_sent for kw in factual_keywords):
-            selected.append((sent, start, end))
-    # Fallback: if nothing passed the filter, include everything ≥ 10 chars
+        kind = _classify_sentence(sent)
+        # Non-factual sentences are kept but will be auto-PASS'd by decision engine
+        # via their claim_type. We still include them so the pipeline can label them.
+        selected.append((sent, start, end))
     if not selected:
         selected = [(s, st, en) for s, st, en in sentences if len(s.strip()) >= 10]
     return selected
@@ -104,7 +139,8 @@ CLAIM_EXTRACTION_TOOL = {
                         "claim_type": {
                             "type": "string",
                             "enum": ["entity", "statistic", "date", "citation",
-                                     "legal", "medical", "geographic", "causal"],
+                                     "legal", "medical", "geographic", "causal",
+                                     "opinion", "prediction", "creative"],
                         },
                         "stakes": {
                             "type": "string",
@@ -124,24 +160,27 @@ CLAIM_EXTRACTION_TOOL = {
 }
 
 SYSTEM_PROMPT = """\
-Extract verifiable factual claims from the text. Output ONLY a JSON object, nothing else.
+Extract ALL claims from the text — factual, opinion, prediction, and creative. Output ONLY JSON.
 
 Format (start with { end with }):
 {"claims":[{"text":"exact claim","normalized":"self-contained form","claim_type":"entity","stakes":"medium","category":"GENERAL"}]}
 
-claim_type: entity | statistic | date | geographic | causal | medical | legal | citation
-stakes: critical | high | medium | low
+claim_type options:
+  FACTUAL types (will be verified against sources):
+    entity | statistic | date | geographic | causal | medical | legal | citation
+  NON-FACTUAL types (auto-passed, not verified):
+    opinion    — subjective judgement, preference, recommendation ("the best", "I think", "arguably")
+    prediction — future-tense or forecast claim ("will", "expected to", "by 2030")
+    creative   — fictional, hypothetical, metaphorical content ("imagine if", "in the story")
+
+stakes: critical | high | medium | low (use low for opinion/prediction/creative)
 category: MEDICAL | LEGAL | FINANCIAL | GENERAL
 
 Rules:
-- Only concrete checkable facts, not opinions or advice.
-- normalized: MUST be ≤ 25 words. Concise, third-person restatement only — no extra context.
-- normalized must be self-contained (replace pronouns with the actual subject).
-- medical/legal/safety facts get stakes=critical.
-- Use MEDICAL for drug/dose/diagnosis/treatment claims.
-- Use LEGAL for law/regulation/court/fine/date-of-law claims.
-- Use FINANCIAL for market/price/GDP/interest rate/economic claims.
-- Use GENERAL for everything else (history, science, geography, tech).
+- Include ALL claims including opinions and predictions — tag them correctly so they are not falsely flagged.
+- normalized: MUST be ≤ 25 words. Concise, third-person restatement. Replace pronouns with subject.
+- medical/legal/safety factual claims get stakes=critical.
+- opinions and predictions always get stakes=low.
 """
 
 

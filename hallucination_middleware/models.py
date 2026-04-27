@@ -21,6 +21,10 @@ class ClaimType(str, Enum):
     MEDICAL = "medical"
     GEOGRAPHIC = "geographic"
     CAUSAL = "causal"
+    # Non-factual types — auto-PASS, never verified against sources
+    OPINION = "opinion"        # subjective judgement ("the best", "I believe", "arguably")
+    PREDICTION = "prediction"  # future-tense claim ("will", "expected to", "might")
+    CREATIVE = "creative"      # fictional/hypothetical/metaphorical content
 
 
 class ClaimStakes(str, Enum):
@@ -81,7 +85,8 @@ class SupportingDocument(BaseModel):
     source: str
     excerpt: str
     relevance_score: float
-    rerank_score: Optional[float] = None   # Cross-encoder score (if re-ranked)
+    rerank_score: Optional[float] = None       # Cross-encoder score (if re-ranked)
+    credibility_score: Optional[float] = None  # Domain trust score [0.0–1.0]
 
 
 class VerifiedClaim(BaseModel):

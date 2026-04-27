@@ -19,6 +19,7 @@ from .config import get_settings
 from .models import (
     ClaimDecision,
     ClaimStakes,
+    ClaimType,
     DecisionAction,
     HallucinationAudit,
     VerificationStatus,
@@ -58,7 +59,15 @@ class DecisionEngine:
         )
         return float(block), float(flag)
 
+    _NON_FACTUAL_TYPES = {ClaimType.OPINION, ClaimType.PREDICTION, ClaimType.CREATIVE}
+
     def _classify(self, vc: VerifiedClaim) -> Tuple[DecisionAction, str]:
+        # Non-factual claims are auto-passed — opinions/predictions/creative content
+        # cannot be verified against sources and should never be flagged as hallucinations.
+        if vc.claim.claim_type in self._NON_FACTUAL_TYPES:
+            label = vc.claim.claim_type.value.upper()
+            return (DecisionAction.PASS, f"AUTO-PASS ({label}) — not a verifiable factual claim")
+
         status = vc.status
         confidence = vc.confidence
         stakes = vc.claim.stakes
