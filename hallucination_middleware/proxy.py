@@ -462,7 +462,11 @@ async def cache_clear() -> JSONResponse:
 async def evaluate_pipeline(request: Request) -> JSONResponse:
     """
     Run the built-in ground-truth benchmark and return precision/recall/F1/accuracy.
-    Optional JSON body: {"max_claims": N} to evaluate on first N benchmark items.
+
+    Optional JSON body:
+      {"max_claims": N}              — evaluate on first N benchmark items
+      {"adversarial": true}          — include adversarial benchmark (44 claims total)
+      {"max_claims": N, "adversarial": true}
     """
     try:
         body = await request.json()
@@ -474,10 +478,12 @@ async def evaluate_pipeline(request: Request) -> JSONResponse:
             max_claims = int(max_claims)
         except (ValueError, TypeError):
             max_claims = None
+    adversarial = bool(body.get("adversarial", False))
 
     from .evaluation import evaluate_accuracy  # noqa: PLC0415
-    result = await evaluate_accuracy(_pipeline_(), max_claims=max_claims)
+    result = await evaluate_accuracy(_pipeline_(), max_claims=max_claims, adversarial=adversarial)
     return JSONResponse({
+        "benchmark": "adversarial" if adversarial else "standard",
         "total_claims": result.total,
         "precision": round(result.precision, 4),
         "recall": round(result.recall, 4),
@@ -488,6 +494,45 @@ async def evaluate_pipeline(request: Request) -> JSONResponse:
         "true_negatives": result.true_negatives,
         "false_negatives": result.false_negatives,
         "details": result.details,
+    })
+
+
+@app.post("/evaluate/llm", dependencies=[Depends(verify_api_key)])
+async def evaluate_llm_pipeline(request: Request) -> JSONResponse:
+    """
+    Empirical F1 — sends prompts that LLMs hallucinate on to the configured
+    provider, then verifies actual LLM responses through the pipeline.
+    Returns F1/precision/recall on real (not synthetic) LLM outputs.
+
+    Optional JSON body: {"max_prompts": N}
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    max_prompts = body.get("max_prompts", None)
+    if max_prompts is not None:
+        try:
+            max_prompts = int(max_prompts)
+        except (ValueError, TypeError):
+            max_prompts = None
+
+    from .evaluation import evaluate_llm_empirical  # noqa: PLC0415
+    result = await evaluate_llm_empirical(_pipeline_(), max_prompts=max_prompts)
+    return JSONResponse({
+        "benchmark": "empirical_llm",
+        "llm_provider": result.llm_provider,
+        "model": result.model,
+        "total_prompts": result.total,
+        "precision": round(result.precision, 4),
+        "recall": round(result.recall, 4),
+        "f1": round(result.f1, 4),
+        "accuracy": round(result.accuracy, 4),
+        "true_positives": result.true_positives,
+        "false_positives": result.false_positives,
+        "true_negatives": result.true_negatives,
+        "false_negatives": result.false_negatives,
+        "sample_outputs": result.sample_outputs,
     })
 
 
