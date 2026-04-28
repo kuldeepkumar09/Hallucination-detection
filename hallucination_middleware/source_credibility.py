@@ -154,10 +154,15 @@ def validate_contradiction(docs: List[Dict], threshold: int = 2) -> Tuple[bool, 
     domains = {_root_domain(d.get("source", "")) for d in credible_docs}
     avg_cred = sum(d.get("credibility_score", 0.4) for d in credible_docs) / len(credible_docs)
 
-    accepted = len(domains) >= threshold
+    # A single Tier-1 source (Wikipedia, .gov, Reuters; credibility ≥ 0.85) is sufficient.
+    # For lower-credibility sources, require `threshold` distinct domains.
+    max_cred = max(d.get("credibility_score", 0.0) for d in credible_docs)
+    effective_threshold = 1 if max_cred >= 0.85 else threshold
+
+    accepted = len(domains) >= effective_threshold
     if not accepted:
         logger.info(
-            "[credibility] Contradiction rejected: only %d domain(s), need %d. Downgrading to partially_supported.",
-            len(domains), threshold,
+            "[credibility] Contradiction rejected: only %d domain(s), need %d (max_cred=%.2f). Downgrading to partially_supported.",
+            len(domains), effective_threshold, max_cred,
         )
     return accepted, round(avg_cred, 3)

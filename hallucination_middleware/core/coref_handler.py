@@ -92,11 +92,14 @@ def _resolve_ner_fallback(doc, text: str) -> str:
             continue
         target_type = _PRONOUN_TARGET[lower]
 
-        # Find nearest preceding entity of the right type
+        # Find nearest preceding entity of the right type within a 2-sentence window.
+        # 60-token lookback ≈ 2–3 sentences; prevents cross-paragraph entity leakage.
         best: Optional[str] = None
         for ent_tok_i, ent_text, ent_label in reversed(entity_seq):
             if ent_tok_i >= token.i:
                 continue  # must precede the pronoun
+            if token.i - ent_tok_i > 60:
+                break  # too far back — stop searching
             if target_type is None or ent_label == target_type:
                 best = ent_text
                 break

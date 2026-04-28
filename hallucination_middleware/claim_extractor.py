@@ -72,16 +72,6 @@ _CREATIVE_MARKERS = {
     'in a world where', 'if we assume',
 }
 
-_FACTUAL_KEYWORDS = [
-    'is', 'was', 'are', 'were', 'has', 'have', 'had',
-    'contains', 'includes', 'equals', 'amounts to',
-    'developed', 'invented', 'created', 'founded', 'discovered',
-    'born', 'died', 'became', 'won', 'lost', 'published',
-    'located', 'known', 'called', 'named', 'defined',
-    'percent', '%', 'million', 'billion', 'thousand',
-]
-
-
 def _classify_sentence(sent: str) -> str:
     """Return 'factual' | 'opinion' | 'prediction' | 'creative'."""
     lower = sent.lower()
@@ -94,29 +84,28 @@ def _classify_sentence(sent: str) -> str:
     return 'factual'
 
 
-def _selection(sentences: List[Tuple[str, int, int]]) -> List[Tuple[str, int, int]]:
-    """Stage 2: Selection — keep factual sentences; tag others for auto-PASS."""
-    selected = []
+def _selection(sentences: List[Tuple[str, int, int]]) -> List[Tuple[str, int, int, str]]:
+    """Stage 2: Selection — tag each sentence with its type for the LLM hint."""
+    selected: List[Tuple[str, int, int, str]] = []
     for sent, start, end in sentences:
         if len(sent.strip()) < 10:
             continue
         kind = _classify_sentence(sent)
-        # Non-factual sentences are kept but will be auto-PASS'd by decision engine
-        # via their claim_type. We still include them so the pipeline can label them.
-        selected.append((sent, start, end))
+        selected.append((sent, start, end, kind))
     if not selected:
-        selected = [(s, st, en) for s, st, en in sentences if len(s.strip()) >= 10]
+        selected = [(s, st, en, "factual") for s, st, en in sentences if len(s.strip()) >= 10]
     return selected
 
-def _decomposition(sentences: List[Tuple[str, int, int]]) -> List[str]:
-    """Stage 4: Decomposition - break into atomic claims."""
+def _decomposition(sentences: List[Tuple[str, int, int, str]]) -> List[str]:
+    """Stage 4: Decomposition - break into atomic claims, prefixed with sentence type."""
     atomic_claims = []
-    for sent, _, _ in sentences:
+    for sent, _, _, kind in sentences:
         # Split on conjunctions like 'and', 'but', etc.
         parts = re.split(r'\s+(and|but|or|however|although)\s+', sent)
         for part in parts:
-            if len(part.strip()) > 10:  # Filter short fragments
-                atomic_claims.append(part.strip())
+            if len(part.strip()) > 10:
+                # Prefix with type so the LLM uses it as a classification hint
+                atomic_claims.append(f"[{kind.upper()}] {part.strip()}")
     return atomic_claims
 
 # ---------------------------------------------------------------------------

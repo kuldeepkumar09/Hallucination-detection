@@ -13,6 +13,7 @@ PARTIALLY_SUPPORTED (any stakes)                 → FLAG
 VERIFIED + confidence ≥ flag_threshold           → ANNOTATE (with source) or PASS
 """
 import logging
+import re
 from typing import List, Tuple
 
 from .config import get_settings
@@ -140,6 +141,69 @@ class DecisionEngine:
             )
 
         return (DecisionAction.PASS, "")
+
+    # ------------------------------------------------------------------
+    # Cross-claim consistency check
+    # ------------------------------------------------------------------
+
+    _DATE_RE = re.compile(r'\b(1[0-9]{3}|20[0-2][0-9])\b')
+
+    def check_internal_contradictions(self, decisions: List[ClaimDecision]) -> List[ClaimDecision]:
+        """
+        Detect claims within the same response that contradict each other on dates/years.
+        If two PASS/ANNOTATE claims reference the same subject entity but different years,
+        escalate the lower-confidence one to FLAG with an internal-contradiction annotation.
+        Only escalates — never downgrade already-flagged/blocked decisions.
+        """
+        # Collect only passable decisions (not already flagged/blocked)
+        escalatable = [
+            (i, d) for i, d in enumerate(decisions)
+            if d.action in (DecisionAction.PASS, DecisionAction.ANNOTATE)
+        ]
+        if len(escalatable) < 2:
+            return decisions
+
+        updated = list(decisions)
+        # Extract (subject_words, years) per decision for pairwise comparison
+        parsed = []
+        for i, d in escalatable:
+            text = d.verified_claim.claim.text
+            years = self._DATE_RE.findall(text)
+            # Subject heuristic: capitalized words (proper nouns) in the claim
+            subjects = set(re.findall(r'\b[A-Z][a-z]{2,}\b', text))
+            parsed.append((i, d, subjects, set(years)))
+
+        for a_idx in range(len(parsed)):
+            for b_idx in range(a_idx + 1, len(parsed)):
+                i_a, d_a, subj_a, years_a = parsed[a_idx]
+                i_b, d_b, subj_b, years_b = parsed[b_idx]
+
+                # Only flag if same subject AND conflicting years
+                if not (subj_a & subj_b):
+                    continue
+                if not years_a or not years_b:
+                    continue
+                if years_a == years_b:
+                    continue
+
+                # Escalate the lower-confidence claim (or second if equal)
+                conf_a = d_a.verified_claim.confidence
+                conf_b = d_b.verified_claim.confidence
+                target_i = i_a if conf_a <= conf_b else i_b
+                target_d = updated[target_i]
+
+                shared = ", ".join(sorted(subj_a & subj_b))
+                annotation = (
+                    f"FLAGGED — Internal contradiction: '{shared}' has conflicting "
+                    f"dates/years across claims ({sorted(years_a)} vs {sorted(years_b)})"
+                )
+                updated[target_i] = target_d.model_copy(update={
+                    "action": DecisionAction.FLAG,
+                    "annotation": annotation,
+                })
+                logger.info("[decision] Internal contradiction flagged for '%s'", shared)
+
+        return updated
 
     # ------------------------------------------------------------------
     # Text annotation

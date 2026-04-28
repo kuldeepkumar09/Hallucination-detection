@@ -497,11 +497,20 @@ class Verifier:
                 if web_docs:
                     total_retrieved += len(web_docs)
 
-        # Score source credibility and blend into relevance scores
-        merged = score_documents(merged)
-
         if s.reranker_enabled and merged and self._reranker is not None:
             merged = await self._reranker.rerank_async(claim.normalized, merged, top_k=max(s.reranker_top_k, 3))
+            # Apply credibility AFTER reranking so combined_score drives final order
+            merged = score_documents(merged)
+            for doc in merged:
+                doc["combined_score"] = round(
+                    0.7 * (doc.get("rerank_score") or doc.get("relevance_score", 0.5))
+                    + 0.3 * doc.get("credibility_score", 0.4),
+                    4,
+                )
+            merged.sort(key=lambda d: d["combined_score"], reverse=True)
+        else:
+            # No reranker — credibility blending is the only ordering signal
+            merged = score_documents(merged)
 
         meta = RetrievalMetadata(
             claim_id=claim.id,

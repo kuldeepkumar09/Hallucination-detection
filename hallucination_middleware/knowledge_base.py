@@ -507,8 +507,10 @@ class WebOnlyKB:
     No ChromaDB, no BM25, no local disk storage, no GPU embedding model.
     """
 
-    # Constant version — no local state to version
-    cache_version: str = "web-only"
+    @property
+    def cache_version(self) -> str:
+        # Rotates every hour — aligns with CACHE_TTL_SECONDS=3600
+        return f"web-{int(time.time() // 3600)}"
 
     def __init__(self) -> None:
         logger.info("[WebOnlyKB] Initialised — all evidence fetched from the live web")

@@ -52,23 +52,6 @@ def _split_sentences(text: str) -> List[str]:
         return [p.strip() for p in parts if p.strip()]
 
 
-def _extract_string_list(content: str) -> List[str]:
-    """Parse a JSON array of strings from LLM output."""
-    import json
-    content = re.sub(r"```(?:json)?\s*", "", content).replace("```", "").strip()
-    # Find the array
-    match = re.search(r"\[.*\]", content, re.DOTALL)
-    if match:
-        try:
-            parsed = json.loads(match.group())
-            if isinstance(parsed, list):
-                return [str(s).strip() for s in parsed if str(s).strip()]
-        except json.JSONDecodeError:
-            pass
-    # Fallback: extract quoted strings
-    items = re.findall(r'"([^"]+)"', content)
-    return items
-
 
 class MPCController:
     """
@@ -200,16 +183,32 @@ class MPCController:
         return candidates[:self._n]
 
     async def _score_candidates(self, candidates: List[str]) -> List[MPCCandidate]:
-        """Score each candidate by querying the KB — higher avg relevance = lower cost."""
-        tasks = [self._kb.query_async(c, n_results=3) for c in candidates]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        """
+        Score candidates using NLI faithfulness + factual density.
+        No web search needed — uses the DeBERTa-v3 NLI model already loaded.
+
+        Faithfulness: how well the candidate entails the original sentence.
+        Factual density: presence of digits and proper nouns = more specific = more verifiable.
+        """
+        from .nli_scorer import get_nli_scorer  # noqa: PLC0415
+        nli = get_nli_scorer()
+        original = candidates[0]  # original is always first
 
         scored: List[MPCCandidate] = []
-        for cand, hits in zip(candidates, results):
-            if isinstance(hits, Exception) or not hits:
-                kb_score = 0.0
+        for cand in candidates:
+            if nli is not None and cand != original:
+                result = nli.score(cand, original)
+                faithfulness = result.get("entailment", 0.5) if result else 0.5
             else:
-                kb_score = sum(h.get("relevance_score", 0.0) for h in hits) / len(hits)
+                faithfulness = 1.0  # original is perfectly faithful to itself
+
+            # Factual density heuristic: more digits + capitalized words = more specific
+            digit_count = len(re.findall(r"\d", cand))
+            cap_count = len(re.findall(r"\b[A-Z][a-z]+", cand))
+            word_count = max(len(cand.split()), 1)
+            density = min(1.0, (digit_count + cap_count) / word_count * 3)
+
+            kb_score = round(0.6 * faithfulness + 0.4 * density, 4)
             cost = round(1.0 - kb_score, 4)
-            scored.append(MPCCandidate(text=cand, cost=cost, kb_score=round(kb_score, 4)))
+            scored.append(MPCCandidate(text=cand, cost=cost, kb_score=kb_score))
         return scored

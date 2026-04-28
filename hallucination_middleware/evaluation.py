@@ -66,8 +66,11 @@ BENCHMARK_CLAIMS: List[BenchmarkClaim] = [
     BenchmarkClaim("The Amazon River is the largest river by discharge volume in the world.", True),
 
     # Geography — FALSE
-    BenchmarkClaim("The Nile River is the longest river in the world at approximately 4,000 miles.", False),  # ~4,130 miles / 6,650 km; length is accurate but Amazon sometimes rivals it — using a cleaner one below
+    BenchmarkClaim("The Mississippi River is the longest river in the world at over 6,000 miles.", False),  # ~2,340 miles; Amazon/Nile are longest
     BenchmarkClaim("Australia is both a country and the largest continent on Earth.", False),  # Antarctica / Asia / Africa are larger
+    BenchmarkClaim("Mount Everest is located in the Alps mountain range.", False),  # Himalayas
+    BenchmarkClaim("The capital of Australia is Sydney.", False),  # Canberra
+    BenchmarkClaim("Humans use only 10 percent of their brain at any given time.", False),  # debunked neuroscience myth
 ]
 
 

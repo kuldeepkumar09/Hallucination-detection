@@ -10,6 +10,7 @@ Flow:
 """
 import asyncio
 import logging
+import re
 from typing import List, Optional
 
 from openai import AsyncOpenAI
@@ -30,6 +31,19 @@ Your task:
 - Do not add disclaimers, notes, or explanations.
 - Return the corrected text only, with no preamble.
 """
+
+
+def _find_corrected_sentence(corrected_text: str, original_claim: str) -> str:
+    """
+    Find the sentence in corrected_text that most closely matches original_claim.
+    Uses word-overlap scoring so the NLI re-verification targets the right sentence.
+    """
+    sentences = re.split(r'(?<=[.!?])\s+', corrected_text)
+    if not sentences:
+        return corrected_text[:300]
+    orig_words = set(original_claim.lower().split())
+    best = max(sentences, key=lambda s: len(orig_words & set(s.lower().split())))
+    return best[:300]
 
 
 class SelfCorrector:
@@ -141,8 +155,9 @@ class SelfCorrector:
                 # Score original claim vs evidence
                 orig_score = nli.score(vc.claim.text, evidence)
                 orig_entail = orig_score.get("entailment", 0.0) if orig_score else 0.0
-                # Score corrected text (full) vs same evidence
-                corr_score = nli.score(corrected_text[:512], evidence)
+                # Score the corrected version of THIS specific claim (not the full text)
+                corr_sentence = _find_corrected_sentence(corrected_text, vc.claim.text)
+                corr_score = nli.score(corr_sentence, evidence)
                 corr_entail = corr_score.get("entailment", 0.0) if corr_score else 0.0
                 if corr_entail > orig_entail:
                     improved += 1
@@ -156,7 +171,7 @@ class SelfCorrector:
                 "[corrector] NLI re-verification: %d/%d claims improved (ratio=%.2f)",
                 improved, checked, improvement_ratio,
             )
-            if improvement_ratio >= 0.4:  # at least 40% of claims improved
+            if improvement_ratio >= 0.5:  # majority of claims must improve
                 return corrected_text
             logger.info("[corrector] Correction rejected by NLI re-verification (ratio=%.2f)", improvement_ratio)
             return None

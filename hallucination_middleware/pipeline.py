@@ -188,6 +188,7 @@ class HallucinationDetectionPipeline:
 
             # ── Stage 3: Make decisions ──────────────────────────────────────
             decisions = self._decision_engine.decide(verified_claims)
+            decisions = self._decision_engine.check_internal_contradictions(decisions)
             audit.claims = decisions
 
             # ── Stage 4: Annotate + finalise + log ──────────────────────────
@@ -311,14 +312,17 @@ class HallucinationDetectionPipeline:
                 except Exception as mpc_exc:
                     logger.warning("[%s] MPC failed: %s", audit.request_id, mpc_exc)
 
+            _audit_logged = False
             self._audit.log(audit)
+            _audit_logged = True
 
         except Exception as exc:
             logger.error("[%s] Pipeline error: %s", audit.request_id, exc, exc_info=True)
             audit.annotated_text = text
             audit.original_text = text
             audit.processing_time_ms = _ms(t0)
-            self._audit.log(audit)
+            if not _audit_logged:
+                self._audit.log(audit)
             await _emit("error", message=f"Pipeline error: {exc}")
 
         return audit
