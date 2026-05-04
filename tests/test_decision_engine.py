@@ -89,10 +89,10 @@ def test_partially_supported_flags(engine):
 
 
 def test_medical_domain_strict_threshold(engine):
-    """MEDICAL domain has block_threshold=0.82 — a 0.80-confidence verified claim should flag."""
-    vc = _make_vc("verified", 0.80, stakes="medium", category="MEDICAL")
+    """MEDICAL domain has flag_threshold=0.75 — a 0.70-confidence verified claim should flag."""
+    vc = _make_vc("verified", 0.70, stakes="medium", category="MEDICAL")
     decisions = engine.decide([vc])
-    # Medical threshold is strict — 0.80 is below the 0.82 block threshold
+    # 0.70 is between block(0.65) and flag(0.75) → FLAG
     assert decisions[0].action in (DecisionAction.FLAG, DecisionAction.BLOCK)
 
 

@@ -15,6 +15,7 @@ services:
   # ── Middleware workers ─────────────────────────────────────────────────────
   middleware:
     build: .
+    image: kuldeep01011/hallucheck:v4
     expose:
       - "8080"
     env_file: .env

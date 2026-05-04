@@ -72,13 +72,14 @@ async def test_correct_calls_llm_for_flagged(corrector):
 async def test_correct_calls_llm_for_blocked(corrector):
     mock_response = MagicMock()
     mock_response.choices = [MagicMock()]
-    mock_response.choices[0].message.content = "Corrected text here."
+    # Response must entail the evidence ("The sky is blue") to pass NLI re-verification
+    mock_response.choices[0].message.content = "The sky is blue."
 
     with patch.object(corrector._client.chat.completions, "create", new=AsyncMock(return_value=mock_response)):
         decisions = [_make_decision(DecisionAction.BLOCK)]
         result = await corrector.correct("Original text.", decisions)
 
-    assert result == "Corrected text here."
+    assert result == "The sky is blue."
 
 
 @pytest.mark.asyncio
@@ -89,7 +90,8 @@ async def test_correct_retries_on_empty_response(corrector):
 
     good = MagicMock()
     good.choices = [MagicMock()]
-    good.choices[0].message.content = "Fixed text."
+    # Response must entail the evidence ("The sky is blue") to pass NLI re-verification
+    good.choices[0].message.content = "The sky is blue."
 
     call_count = 0
 
@@ -102,7 +104,7 @@ async def test_correct_retries_on_empty_response(corrector):
         decisions = [_make_decision(DecisionAction.FLAG)]
         result = await corrector.correct("Original.", decisions)
 
-    assert result == "Fixed text."
+    assert result == "The sky is blue."
     assert call_count == 2
 
 

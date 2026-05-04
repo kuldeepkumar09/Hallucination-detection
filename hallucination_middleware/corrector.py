@@ -153,12 +153,12 @@ class SelfCorrector:
                 if not evidence:
                     continue
                 # Score original claim vs evidence
-                orig_score = nli.score(vc.claim.text, evidence)
-                orig_entail = orig_score.get("entailment", 0.0) if orig_score else 0.0
+                orig_conf, orig_status = nli.score_pair(vc.claim.text, evidence)
+                orig_entail = orig_conf if orig_status == "verified" else 0.0
                 # Score the corrected version of THIS specific claim (not the full text)
                 corr_sentence = _find_corrected_sentence(corrected_text, vc.claim.text)
-                corr_score = nli.score(corr_sentence, evidence)
-                corr_entail = corr_score.get("entailment", 0.0) if corr_score else 0.0
+                corr_conf, corr_status = nli.score_pair(corr_sentence, evidence)
+                corr_entail = corr_conf if corr_status == "verified" else 0.0
                 if corr_entail > orig_entail:
                     improved += 1
                 checked += 1

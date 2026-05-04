@@ -197,8 +197,8 @@ class MPCController:
         scored: List[MPCCandidate] = []
         for cand in candidates:
             if nli is not None and cand != original:
-                result = nli.score(cand, original)
-                faithfulness = result.get("entailment", 0.5) if result else 0.5
+                conf, status = nli.score_pair(cand, original)
+                faithfulness = conf if status == "verified" else max(0.0, 0.5 - conf * 0.5)
             else:
                 faithfulness = 1.0  # original is perfectly faithful to itself
 

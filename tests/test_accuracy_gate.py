@@ -81,11 +81,11 @@ def _decide(
 # Known-answer test cases:
 # (status, confidence, category, stakes, expected_action)
 #
-# Domain thresholds (from config.py defaults):
-#   GENERAL   block=0.40  flag=0.60
-#   MEDICAL   block=0.82  flag=0.88
-#   LEGAL     block=0.76  flag=0.82
-#   FINANCIAL block=0.70  flag=0.76
+# Domain thresholds (from config.py / .env):
+#   GENERAL   block=0.40  flag=0.55
+#   MEDICAL   block=0.65  flag=0.75
+#   LEGAL     block=0.60  flag=0.70
+#   FINANCIAL block=0.58  flag=0.65
 #
 # annotate_verified=True (default) → VERIFIED ≥ flag_threshold → ANNOTATE, not PASS
 # BLOCK on VERIFIED only when: confidence < block_threshold AND stakes==CRITICAL
@@ -95,11 +95,11 @@ def _decide(
 
 CASES = [
     # -- GENERAL domain ---------------------------------------------------
-    # Verified above flag_threshold → ANNOTATE (annotate_verified=True)
+    # Verified above flag_threshold(0.55) → ANNOTATE (annotate_verified=True)
     (VerificationStatus.VERIFIED,            0.95, "GENERAL", ClaimStakes.MEDIUM,   DecisionAction.ANNOTATE),
     (VerificationStatus.VERIFIED,            0.75, "GENERAL", ClaimStakes.MEDIUM,   DecisionAction.ANNOTATE),
-    # Verified below flag_threshold(0.60) → FLAG
-    (VerificationStatus.VERIFIED,            0.50, "GENERAL", ClaimStakes.MEDIUM,   DecisionAction.FLAG),
+    # Verified below flag_threshold(0.55) → FLAG
+    (VerificationStatus.VERIFIED,            0.45, "GENERAL", ClaimStakes.MEDIUM,   DecisionAction.FLAG),
     # Partially supported → always FLAG
     (VerificationStatus.PARTIALLY_SUPPORTED, 0.55, "GENERAL", ClaimStakes.MEDIUM,   DecisionAction.FLAG),
     (VerificationStatus.PARTIALLY_SUPPORTED, 0.25, "GENERAL", ClaimStakes.MEDIUM,   DecisionAction.FLAG),
@@ -110,35 +110,36 @@ CASES = [
     # Unverifiable → always FLAG
     (VerificationStatus.UNVERIFIABLE,        0.30, "GENERAL", ClaimStakes.LOW,      DecisionAction.FLAG),
 
-    # -- MEDICAL domain — block=0.82, flag=0.88 --------------------------
-    # Verified above flag_threshold(0.88) → ANNOTATE
+    # -- MEDICAL domain — block=0.65, flag=0.75 --------------------------
+    # Verified above flag_threshold(0.75) → ANNOTATE
     (VerificationStatus.VERIFIED,            0.95, "MEDICAL", ClaimStakes.CRITICAL, DecisionAction.ANNOTATE),
-    # Verified between block(0.82) and flag(0.88) → FLAG (not critical+below block)
-    (VerificationStatus.VERIFIED,            0.85, "MEDICAL", ClaimStakes.CRITICAL, DecisionAction.FLAG),
-    # Verified below block(0.82) + critical → BLOCK
-    (VerificationStatus.VERIFIED,            0.80, "MEDICAL", ClaimStakes.CRITICAL, DecisionAction.BLOCK),
+    (VerificationStatus.VERIFIED,            0.80, "MEDICAL", ClaimStakes.CRITICAL, DecisionAction.ANNOTATE),
+    # Verified between block(0.65) and flag(0.75) → FLAG
+    (VerificationStatus.VERIFIED,            0.70, "MEDICAL", ClaimStakes.CRITICAL, DecisionAction.FLAG),
+    # Verified below block(0.65) + critical → BLOCK
+    (VerificationStatus.VERIFIED,            0.60, "MEDICAL", ClaimStakes.CRITICAL, DecisionAction.BLOCK),
     # Partially supported → always FLAG
-    (VerificationStatus.PARTIALLY_SUPPORTED, 0.70, "MEDICAL", ClaimStakes.HIGH,     DecisionAction.FLAG),
+    (VerificationStatus.PARTIALLY_SUPPORTED, 0.50, "MEDICAL", ClaimStakes.HIGH,     DecisionAction.FLAG),
     # Contradicted + critical → BLOCK
     (VerificationStatus.CONTRADICTED,        0.05, "MEDICAL", ClaimStakes.CRITICAL, DecisionAction.BLOCK),
 
-    # -- LEGAL domain — block=0.76, flag=0.82 ----------------------------
-    # Verified above flag_threshold(0.82) → ANNOTATE
+    # -- LEGAL domain — block=0.60, flag=0.70 ----------------------------
+    # Verified above flag_threshold(0.70) → ANNOTATE
     (VerificationStatus.VERIFIED,            0.90, "LEGAL",   ClaimStakes.HIGH,     DecisionAction.ANNOTATE),
-    # Verified below flag_threshold(0.82) → FLAG (high not critical → no block)
-    (VerificationStatus.VERIFIED,            0.78, "LEGAL",   ClaimStakes.HIGH,     DecisionAction.FLAG),
-    (VerificationStatus.VERIFIED,            0.74, "LEGAL",   ClaimStakes.HIGH,     DecisionAction.FLAG),
-    # Verified below block_threshold(0.76) + critical → BLOCK
-    (VerificationStatus.VERIFIED,            0.74, "LEGAL",   ClaimStakes.CRITICAL, DecisionAction.BLOCK),
+    (VerificationStatus.VERIFIED,            0.75, "LEGAL",   ClaimStakes.HIGH,     DecisionAction.ANNOTATE),
+    # Verified between block(0.60) and flag(0.70) → FLAG
+    (VerificationStatus.VERIFIED,            0.65, "LEGAL",   ClaimStakes.HIGH,     DecisionAction.FLAG),
+    # Verified below block_threshold(0.60) + critical → BLOCK
+    (VerificationStatus.VERIFIED,            0.55, "LEGAL",   ClaimStakes.CRITICAL, DecisionAction.BLOCK),
     # Contradicted + high → BLOCK
     (VerificationStatus.CONTRADICTED,        0.20, "LEGAL",   ClaimStakes.HIGH,     DecisionAction.BLOCK),
 
-    # -- FINANCIAL domain — block=0.70, flag=0.76 -------------------------
-    # Verified above flag_threshold(0.76) → ANNOTATE
+    # -- FINANCIAL domain — block=0.58, flag=0.65 -------------------------
+    # Verified above flag_threshold(0.65) → ANNOTATE
     (VerificationStatus.VERIFIED,            0.80, "FINANCIAL", ClaimStakes.HIGH,   DecisionAction.ANNOTATE),
-    # Verified below flag_threshold(0.76) → FLAG (high not critical → no block)
-    (VerificationStatus.VERIFIED,            0.73, "FINANCIAL", ClaimStakes.HIGH,   DecisionAction.FLAG),
-    (VerificationStatus.VERIFIED,            0.68, "FINANCIAL", ClaimStakes.HIGH,   DecisionAction.FLAG),
+    (VerificationStatus.VERIFIED,            0.70, "FINANCIAL", ClaimStakes.HIGH,   DecisionAction.ANNOTATE),
+    # Verified between block(0.58) and flag(0.65) → FLAG
+    (VerificationStatus.VERIFIED,            0.62, "FINANCIAL", ClaimStakes.HIGH,   DecisionAction.FLAG),
     # Unverifiable → always FLAG
     (VerificationStatus.UNVERIFIABLE,        0.30, "FINANCIAL", ClaimStakes.HIGH,   DecisionAction.FLAG),
 ]

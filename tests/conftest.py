@@ -17,7 +17,9 @@ os.environ.setdefault("KB_MIN_RELEVANCE", "0.0")
 @pytest.fixture(scope="session")
 def tmp_kb_dir():
     """Temporary ChromaDB directory — shared across all tests in a session."""
-    with tempfile.TemporaryDirectory(prefix="hallu_test_kb_") as d:
+    # ignore_cleanup_errors=True prevents PermissionError on Windows when ChromaDB
+    # holds a file handle open at teardown time (mmap'd .bin files).
+    with tempfile.TemporaryDirectory(prefix="hallu_test_kb_", ignore_cleanup_errors=True) as d:
         yield d
 
 
