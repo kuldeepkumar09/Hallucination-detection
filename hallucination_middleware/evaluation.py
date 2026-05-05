@@ -161,8 +161,91 @@ ADVERSARIAL_CLAIMS: List[BenchmarkClaim] = [
     ),
 ]
 
+# ---------------------------------------------------------------------------
+# MEDICAL domain benchmark — 20 claims (10 TRUE, 10 FALSE)
+# Covers pharmacology, anatomy, disease, vaccination, diagnostics.
+# All FALSE claims are common LLM medical hallucinations.
+# ---------------------------------------------------------------------------
+MEDICAL_BENCHMARK_CLAIMS: List[BenchmarkClaim] = [
+    # MEDICAL — TRUE
+    BenchmarkClaim("Penicillin was discovered by Alexander Fleming in 1928.", True),
+    BenchmarkClaim("The human heart has four chambers: two atria and two ventricles.", True),
+    BenchmarkClaim("Type 1 diabetes is an autoimmune condition in which the pancreas produces little or no insulin.", True),
+    BenchmarkClaim("The MMR vaccine protects against measles, mumps, and rubella.", True),
+    BenchmarkClaim("Statins are a class of drugs used to lower LDL cholesterol levels.", True),
+    BenchmarkClaim("Normal adult resting heart rate is between 60 and 100 beats per minute.", True),
+    BenchmarkClaim("Insulin is a hormone produced by the pancreas that regulates blood glucose levels.", True),
+    BenchmarkClaim("COVID-19 is caused by the SARS-CoV-2 coronavirus.", True),
+    BenchmarkClaim("The BCG vaccine is primarily used to protect against tuberculosis.", True),
+    BenchmarkClaim("Metformin is the first-line oral medication for managing Type 2 diabetes.", True),
+
+    # MEDICAL — FALSE (hallucinations — dangerous misinformation)
+    BenchmarkClaim("Aspirin is safe to give to children under 12 for fever management.", False),  # Reye's syndrome risk; contraindicated under 16
+    BenchmarkClaim("Antibiotics are effective treatments for viral infections such as influenza.", False),  # antibiotics kill bacteria, not viruses
+    BenchmarkClaim("The liver is responsible for producing red blood cells in adults.", False),  # bone marrow produces RBCs in adults
+    BenchmarkClaim("Penicillin was discovered by Louis Pasteur in 1895.", False),  # Fleming, 1928
+    BenchmarkClaim("Metformin is the standard drug treatment for Type 1 diabetes.", False),  # Metformin is for Type 2; Type 1 requires insulin
+    BenchmarkClaim("Cholesterol is obtained entirely through diet and cannot be synthesised by the body.", False),  # ~80% synthesised by liver
+    BenchmarkClaim("Blood type O positive is the universal blood donor for all patients.", False),  # O negative is the universal donor
+    BenchmarkClaim("The normal adult resting heart rate is 100 to 120 beats per minute.", False),  # normal range is 60–100 bpm
+    BenchmarkClaim("Vaccines cause autism, a link established by a 1998 Lancet study.", False),  # study retracted; link definitively disproven
+    BenchmarkClaim("Ibuprofen is the safest analgesic to use throughout all trimesters of pregnancy.", False),  # contraindicated in 3rd trimester; paracetamol preferred
+]
+
+# ---------------------------------------------------------------------------
+# LEGAL domain benchmark — 12 claims (6 TRUE, 6 FALSE)
+# Covers GDPR, landmark cases, constitutional law, international law.
+# ---------------------------------------------------------------------------
+LEGAL_BENCHMARK_CLAIMS: List[BenchmarkClaim] = [
+    # LEGAL — TRUE
+    BenchmarkClaim("The GDPR entered into force on 25 May 2018.", True),
+    BenchmarkClaim("Under GDPR, organisations must report personal data breaches to supervisory authorities within 72 hours of becoming aware of the breach.", True),
+    BenchmarkClaim("The Universal Declaration of Human Rights was adopted by the United Nations General Assembly in 1948.", True),
+    BenchmarkClaim("In Miranda v. Arizona (1966), the US Supreme Court ruled that detained suspects must be informed of their rights before interrogation.", True),
+    BenchmarkClaim("The First Amendment to the US Constitution protects freedom of speech, religion, press, assembly, and petition.", True),
+    BenchmarkClaim("The Geneva Conventions of 1949 establish the standards of international humanitarian law for the treatment of war victims.", True),
+
+    # LEGAL — FALSE
+    BenchmarkClaim("GDPR fines are capped at 5 million euros or 1 percent of global annual turnover.", False),  # actually 20M euros or 4% of global turnover
+    BenchmarkClaim("The United Nations was founded in 1950 following the Korean War.", False),  # founded in 1945 after WW2
+    BenchmarkClaim("Habeas corpus is a legal principle that requires defendants to prove their own innocence before a court.", False),  # it requires the state to justify detention, not prove innocence
+    BenchmarkClaim("The Nuremberg trials of 1945 to 1946 were conducted by the International Criminal Court.", False),  # the ICC was established in 2002; Nuremberg used the International Military Tribunal
+    BenchmarkClaim("Under US federal law, all crimes including murder have a statute of limitations of 7 years.", False),  # federal murder has no SOL; many serious crimes have no SOL
+    BenchmarkClaim("GDPR applies only to companies based within the European Union.", False),  # applies to any organisation that processes data of EU residents, regardless of location
+]
+
+# ---------------------------------------------------------------------------
+# FINANCIAL domain benchmark — 12 claims (6 TRUE, 6 FALSE)
+# Covers market history, monetary policy, economic indicators.
+# ---------------------------------------------------------------------------
+FINANCIAL_BENCHMARK_CLAIMS: List[BenchmarkClaim] = [
+    # FINANCIAL — TRUE
+    BenchmarkClaim("The New York Stock Exchange was founded in 1792 under the Buttonwood Agreement.", True),
+    BenchmarkClaim("The Federal Reserve was established by the Federal Reserve Act signed by President Wilson in 1913.", True),
+    BenchmarkClaim("Gross Domestic Product measures the total monetary value of all goods and services produced in a country in a given period.", True),
+    BenchmarkClaim("The Bretton Woods Conference of 1944 established the International Monetary Fund and the World Bank.", True),
+    BenchmarkClaim("A bear market is defined as a decline of 20 percent or more in a major stock index from its recent high.", True),
+    BenchmarkClaim("Quantitative easing is a monetary policy tool where a central bank purchases government bonds and other securities to inject money into the economy.", True),
+
+    # FINANCIAL — FALSE
+    BenchmarkClaim("The Dow Jones Industrial Average tracks the 500 largest publicly traded companies in the United States.", False),  # tracks 30 companies; the S&P 500 tracks 500
+    BenchmarkClaim("The International Monetary Fund was founded in 1975 to stabilise exchange rates after the oil crisis.", False),  # founded in 1944 at Bretton Woods
+    BenchmarkClaim("A bull market is a period when stock prices have fallen more than 20 percent from recent highs.", False),  # that is a bear market; bull market = rising prices
+    BenchmarkClaim("The World Bank's primary mandate is to provide emergency currency support to nations facing balance-of-payments crises.", False),  # that is the IMF's role; World Bank funds development projects
+    BenchmarkClaim("Inflation is defined as a sustained decrease in the general price level of goods and services.", False),  # that is deflation; inflation is a sustained increase
+    BenchmarkClaim("The Nasdaq Stock Exchange was founded in 1971 and primarily lists manufacturing and industrial companies.", False),  # founded 1971 but primarily lists technology companies
+]
+
 # Full combined benchmark — used when adversarial=True
 ALL_BENCHMARK_CLAIMS: List[BenchmarkClaim] = BENCHMARK_CLAIMS + ADVERSARIAL_CLAIMS
+
+# Domain-specific combined benchmark
+ALL_DOMAIN_CLAIMS: List[BenchmarkClaim] = (
+    MEDICAL_BENCHMARK_CLAIMS + LEGAL_BENCHMARK_CLAIMS + FINANCIAL_BENCHMARK_CLAIMS
+)
+
+# Master benchmark — everything
+FULL_BENCHMARK: List[BenchmarkClaim] = ALL_BENCHMARK_CLAIMS + ALL_DOMAIN_CLAIMS
 
 
 @dataclass
@@ -183,6 +266,7 @@ async def evaluate_accuracy(
     pipeline,
     max_claims: Optional[int] = None,
     adversarial: bool = False,
+    domain: Optional[str] = None,
 ) -> EvaluationResult:
     """
     Run benchmark claims through the pipeline and compute detection metrics.
@@ -194,11 +278,23 @@ async def evaluate_accuracy(
         pipeline    : HallucinationDetectionPipeline instance
         max_claims  : cap number of benchmark items (useful for quick smoke-tests)
         adversarial : if True, uses ALL_BENCHMARK_CLAIMS (standard + adversarial set)
+        domain      : if set, runs domain-specific benchmark ("MEDICAL"|"LEGAL"|"FINANCIAL"|"ALL_DOMAINS")
 
     Returns:
         EvaluationResult with precision, recall, F1, accuracy, and per-item details
     """
-    source = ALL_BENCHMARK_CLAIMS if adversarial else BENCHMARK_CLAIMS
+    if domain == "MEDICAL":
+        source = MEDICAL_BENCHMARK_CLAIMS
+    elif domain == "LEGAL":
+        source = LEGAL_BENCHMARK_CLAIMS
+    elif domain == "FINANCIAL":
+        source = FINANCIAL_BENCHMARK_CLAIMS
+    elif domain == "ALL_DOMAINS":
+        source = ALL_DOMAIN_CLAIMS
+    elif adversarial:
+        source = ALL_BENCHMARK_CLAIMS
+    else:
+        source = BENCHMARK_CLAIMS
     claims = source[:max_claims] if max_claims else source
     result = EvaluationResult(total=len(claims))
 

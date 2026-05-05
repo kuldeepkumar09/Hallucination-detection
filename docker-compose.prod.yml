@@ -1,0 +1,73 @@
+# ── HalluCheck v4 — Production deployment using pre-built Docker Hub image ────
+#
+# Usage:
+#   cp .env.example .env          # fill in your API keys
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# This file pulls the pre-built image from Docker Hub — no local build needed.
+# The image already contains: PyTorch, DeBERTa NLI, sentence-transformers, spaCy.
+#
+# Requirements:
+#   - Docker Desktop with GPU support (NVIDIA Container Toolkit)
+#   - .env file with API keys (copy from .env.example)
+
+services:
+
+  middleware:
+    image: kuldeep01011/hallucheck:v4
+    pull_policy: always
+    ports:
+      - "8080:8080"        # direct access without nginx — simpler for solo deploy
+    env_file: .env
+    environment:
+      - PROXY_HOST=0.0.0.0
+      - PROXY_PORT=8080
+      - KB_PERSIST_DIR=/data/chroma_db
+      - AUDIT_LOG_PATH=/data/audit_trail.jsonl
+      - CHROMA_DB_PATH=/data/chroma_db
+      - REDIS_URL=redis://redis:6379
+    volumes:
+      - chroma_data:/data/chroma_db
+      - audit_data:/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+        reservations:
+          memory: 1g
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      redis-server
+        --maxmemory 512mb
+        --maxmemory-policy allkeys-lru
+        --save 60 1
+        --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - redis_data:/data
+
+volumes:
+  chroma_data:
+  audit_data:
+  redis_data:

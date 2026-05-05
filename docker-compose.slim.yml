@@ -1,0 +1,75 @@
+# ── HalluCheck v4 — Slim CPU deployment ──────────────────────────────────────
+#
+# Uses the slim image (CPU-only PyTorch, ~3-4 GB).
+# No GPU required — works on any cloud VM or local machine.
+#
+# Usage:
+#   cp .env.example .env          # fill in API keys
+#   docker compose -f docker-compose.slim.yml up -d
+#
+# Recommended .env overrides for CPU deployment (copy these into your .env):
+#   NLI_ONLY_MODE=true
+#   FAST_MODE=true
+#   RERANKER_ENABLED=false
+
+services:
+
+  middleware:
+    build:
+      context: .
+      dockerfile: Dockerfile.slim
+    image: kuldeep01011/hallucheck:v4-slim
+    ports:
+      - "8080:8080"
+    env_file: .env
+    environment:
+      - PROXY_HOST=0.0.0.0
+      - PROXY_PORT=8080
+      - KB_PERSIST_DIR=/data/chroma_db
+      - AUDIT_LOG_PATH=/data/audit_trail.jsonl
+      - CHROMA_DB_PATH=/data/chroma_db
+      - REDIS_URL=redis://redis:6379
+      # CPU deployment: enable fast mode for acceptable latency
+      - NLI_ONLY_MODE=true
+      - FAST_MODE=true
+      - RERANKER_ENABLED=false
+    volumes:
+      - chroma_data:/data/chroma_db
+      - audit_data:/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 3g
+        reservations:
+          memory: 1g
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      redis-server
+        --maxmemory 256mb
+        --maxmemory-policy allkeys-lru
+        --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - redis_data:/data
+
+volumes:
+  chroma_data:
+  audit_data:
+  redis_data:

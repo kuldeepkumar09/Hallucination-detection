@@ -196,7 +196,7 @@ class HallucinationDetectionPipeline:
             audit.annotated_text = annotated
 
             # ── Stage 4b: HMM cascade detection ─────────────────────────────
-            if self._hmm is not None and decisions and len(decisions) >= 3:
+            if self._hmm is not None and decisions and len(decisions) >= 2:
                 conf_scores = [d.verified_claim.confidence for d in decisions]
                 hmm_result = self._hmm.analyze(conf_scores)
                 audit.hmm_states = hmm_result["states"]
@@ -278,8 +278,9 @@ class HallucinationDetectionPipeline:
 
             # ── Stage 6: Self-correction (off hot path) ──────────────────────
             # Runs AFTER "done" — "corrected" event arrives incrementally via SSE.
+            # Skipped entirely when fast_mode=True (no LLM calls in fast mode).
             s = get_settings()
-            if s.self_correction_enabled and any(
+            if s.self_correction_enabled and not s.fast_mode and any(
                 d.action.value in ("block", "flag") for d in decisions
             ):
                 await _emit("correcting", message="Applying self-correction for flagged claims…")
@@ -298,8 +299,8 @@ class HallucinationDetectionPipeline:
                 except Exception as corr_exc:
                     logger.warning("[%s] Self-correction failed: %s", audit.request_id, corr_exc)
 
-            # ── Stage 7: MPC refinement (optional) ──────────────────────────
-            if self._mpc is not None:
+            # ── Stage 7: MPC refinement (optional, disabled in fast_mode) ─────
+            if self._mpc is not None and not s.fast_mode:
                 source_for_mpc = audit.corrected_text or text
                 await _emit("mpc", message="Running MPC receding-horizon refinement…")
                 try:

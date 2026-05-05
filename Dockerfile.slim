@@ -1,0 +1,92 @@
+# ── HalluCheck v4 — Slim CPU-only image (target < 5 GB) ──────────────────────
+#
+# Use this when:
+#   - Deploying to cloud (AWS, GCP, Azure, Render, Railway, Fly.io)
+#   - You have no NVIDIA GPU in the deployment environment
+#   - You want a small, fast-pulling image
+#
+# Trade-off vs Dockerfile (CUDA):
+#   - DeBERTa NLI runs on CPU: ~0.5 s/claim instead of ~0.05 s/claim on GPU
+#   - No CUDA dependency — works on any Linux host
+#   - Image size: ~3–4 GB instead of ~27.5 GB
+#
+# Recommended settings in .env for CPU deployment:
+#   NLI_ONLY_MODE=true    (avoid LLM latency; NLI alone = 2–4 s/request)
+#   FAST_MODE=true        (also disable MPC + self-correction)
+#   RERANKER_ENABLED=false (cross-encoder reranking is slow on CPU)
+#
+# Build:
+#   docker build -f Dockerfile.slim -t kuldeep01011/hallucheck:v4-slim .
+#
+# Push:
+#   docker push kuldeep01011/hallucheck:v4-slim
+#
+# Run (no compose):
+#   docker run -p 8080:8080 --env-file .env kuldeep01011/hallucheck:v4-slim
+
+# ── Stage 1: Build React SPA ─────────────────────────────────────────────────
+FROM node:20-slim AS frontend-build
+WORKDIR /app/frontend
+COPY frontend/package*.json ./
+RUN npm ci --silent
+COPY frontend/ ./
+RUN npm run build
+
+# ── Stage 2: Python slim runtime (CPU-only) ───────────────────────────────────
+FROM python:3.11-slim AS runtime
+WORKDIR /app
+
+# System dependencies — minimal set only
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set HF cache dir before downloading models
+ENV HF_HOME=/app/.cache
+ENV HF_HUB_OFFLINE=0
+ENV TRANSFORMERS_OFFLINE=0
+
+# Install CPU-only PyTorch first (avoids pip pulling CUDA wheels later)
+RUN pip install --no-cache-dir \
+    torch==2.2.2 \
+    --index-url https://download.pytorch.org/whl/cpu
+
+# All remaining dependencies (torch excluded to avoid overwrite)
+COPY requirements.txt ./
+RUN grep -v "^torch" requirements.txt > requirements-notorch.txt \
+    && pip install --no-cache-dir -r requirements-notorch.txt
+
+# Download models and bake into image layer
+# These ~600 MB models are cached here so startup is instant
+RUN python -m spacy download en_core_web_sm && \
+    python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')" && \
+    python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')" && \
+    python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/nli-deberta-v3-large')"
+
+# Block HuggingFace network at runtime — all models already baked in
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
+
+# Application code
+COPY hallucination_middleware/ ./hallucination_middleware/
+COPY run_proxy.py ./
+
+# Built frontend from Stage 1
+COPY --from=frontend-build /app/frontend/dist ./frontend/dist
+
+# Non-root user for security
+RUN useradd -m -u 1000 appuser && chown -R appuser /app
+
+# Volume for persistent data (ChromaDB, audit logs)
+RUN mkdir -p /data && chown appuser /data
+VOLUME ["/data"]
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+USER appuser
+
+CMD ["python", "run_proxy.py"]

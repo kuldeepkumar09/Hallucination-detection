@@ -1,0 +1,113 @@
+name: CPU Docker Image — Build & Smoke Test
+
+on:
+  push:
+    paths:
+      - "Dockerfile.slim"
+      - "requirements.txt"
+      - "hallucination_middleware/**"
+      - "run_proxy.py"
+      - "frontend/**"
+      - ".github/workflows/docker-slim.yml"
+  pull_request:
+    paths:
+      - "Dockerfile.slim"
+      - "requirements.txt"
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build slim image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.slim
+          push: false
+          load: true
+          tags: hallucheck-slim:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Check image size (≤ 5 GB)
+        run: |
+          SIZE=$(docker image inspect hallucheck-slim:ci --format='{{.Size}}')
+          echo "Image size: $(echo "$SIZE / 1073741824" | bc -l | xargs printf '%.2f') GB"
+          if [ "$SIZE" -gt 5368709120 ]; then
+            echo "FAIL: image exceeds 5 GB"
+            exit 1
+          fi
+          echo "PASS: image within 5 GB"
+
+      - name: Start container
+        run: |
+          docker run -d \
+            --name hallucheck-ci \
+            -p 8080:8080 \
+            -e LLM_PROVIDER=nvidia_nim \
+            -e NVIDIA_NIM_API_KEY=${{ secrets.NVIDIA_NIM_API_KEY || 'dummy' }} \
+            -e TAVILY_API_KEY=${{ secrets.TAVILY_API_KEY || 'dummy' }} \
+            -e API_KEY=ci-smoke-key \
+            -e NLI_ONLY_MODE=true \
+            -e FAST_MODE=true \
+            -e RERANKER_ENABLED=false \
+            -e REDIS_URL="" \
+            hallucheck-slim:ci
+
+      - name: Wait for /health
+        run: |
+          for i in $(seq 1 24); do
+            if curl -sf http://localhost:8080/health; then
+              echo "PASS: /health responded on attempt $i"
+              exit 0
+            fi
+            echo "Waiting... ($i/24)"
+            sleep 5
+          done
+          echo "FAIL: /health never responded"
+          docker logs hallucheck-ci --tail 50
+          exit 1
+
+      - name: Smoke — /health payload
+        run: |
+          RESP=$(curl -sf http://localhost:8080/health)
+          echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'status' in d"
+          echo "PASS: /health JSON valid"
+
+      - name: Smoke — /status endpoint
+        run: |
+          RESP=$(curl -sf http://localhost:8080/status -H "X-API-Key: ci-smoke-key")
+          echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'version' in d"
+          echo "PASS: /status returns version"
+
+      - name: Smoke — /verify endpoint
+        run: |
+          RESP=$(curl -sf -X POST http://localhost:8080/verify \
+            -H "Content-Type: application/json" \
+            -H "X-API-Key: ci-smoke-key" \
+            --max-time 30 \
+            -d '{"text":"The Earth orbits the Sun.","model":"ci-test"}')
+          echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'total_claims' in d"
+          echo "PASS: /verify returns audit JSON"
+
+      - name: Verify non-root user
+        run: |
+          USER=$(docker exec hallucheck-ci whoami)
+          [ "$USER" = "appuser" ] && echo "PASS: running as appuser" || (echo "FAIL: got $USER"; exit 1)
+
+      - name: Verify CUDA unavailable (CPU-only)
+        run: |
+          RESULT=$(docker exec hallucheck-ci python -c "import torch; print(torch.cuda.is_available())")
+          [ "$RESULT" = "False" ] && echo "PASS: CUDA=False confirmed" || (echo "FAIL: got $RESULT"; exit 1)
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker logs hallucheck-ci --tail 100

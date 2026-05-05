@@ -14,7 +14,7 @@ VERIFIED + confidence ≥ flag_threshold           → ANNOTATE (with source) or
 """
 import logging
 import re
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from .config import get_settings
 from .models import (
@@ -23,6 +23,7 @@ from .models import (
     ClaimType,
     DecisionAction,
     HallucinationAudit,
+    HallucinationType,
     VerificationStatus,
     VerifiedClaim,
 )
@@ -42,11 +43,13 @@ class DecisionEngine:
         """Return one ClaimDecision per VerifiedClaim."""
         decisions: List[ClaimDecision] = []
         for vc in verified_claims:
-            action, annotation = self._classify(vc)
+            action, annotation, hallucination_type, correct_info = self._classify(vc)
             decisions.append(ClaimDecision(
                 verified_claim=vc,
                 action=action,
                 annotation=annotation,
+                hallucination_type=hallucination_type,
+                correct_info=correct_info,
             ))
         return decisions
 
@@ -62,12 +65,19 @@ class DecisionEngine:
 
     _NON_FACTUAL_TYPES = {ClaimType.OPINION, ClaimType.PREDICTION, ClaimType.CREATIVE}
 
-    def _classify(self, vc: VerifiedClaim) -> Tuple[DecisionAction, str]:
+    def _classify(
+        self, vc: VerifiedClaim
+    ) -> Tuple[DecisionAction, str, HallucinationType, Optional[str]]:
         # Non-factual claims are auto-passed — opinions/predictions/creative content
         # cannot be verified against sources and should never be flagged as hallucinations.
         if vc.claim.claim_type in self._NON_FACTUAL_TYPES:
             label = vc.claim.claim_type.value.upper()
-            return (DecisionAction.PASS, f"AUTO-PASS ({label}) — not a verifiable factual claim")
+            return (
+                DecisionAction.PASS,
+                f"AUTO-PASS ({label}) — not a verifiable factual claim",
+                HallucinationType.CORRECT,
+                None,
+            )
 
         status = vc.status
         confidence = vc.confidence
@@ -78,32 +88,43 @@ class DecisionEngine:
 
         block_threshold, flag_threshold = self._get_thresholds(category)
 
+        # Derive correct_info from key evidence when the claim is wrong
+        correct_info: Optional[str] = None
+        if status == VerificationStatus.CONTRADICTED and vc.key_evidence:
+            correct_info = vc.key_evidence[:300]
+
         # ---- CONTRADICTED ------------------------------------------------
-        # Only CONTRADICTED claims get BLOCK — we have positive evidence they are wrong.
         if status == VerificationStatus.CONTRADICTED:
             reason = vc.contradiction_reason or "Conflicts with authoritative source"
             if is_critical or is_high:
                 return (
                     DecisionAction.BLOCK,
                     f"BLOCKED — Contradiction detected ({stakes.value} stakes, {category}): {reason}",
+                    HallucinationType.FACTUAL_ERROR,
+                    correct_info,
                 )
             return (
                 DecisionAction.FLAG,
                 f"FLAGGED — Contradicted by source (confidence {confidence:.2f}): {reason}",
+                HallucinationType.FACTUAL_ERROR,
+                correct_info,
             )
 
         # ---- UNVERIFIABLE -------------------------------------------------
-        # No evidence found ≠ wrong. Never BLOCK on lack of evidence — only FLAG.
         if status == VerificationStatus.UNVERIFIABLE:
             if is_critical:
                 return (
                     DecisionAction.FLAG,
                     f"FLAGGED — Critical {category} claim: no authoritative source found. "
                     "Add relevant documents to the knowledge base to verify.",
+                    HallucinationType.NO_EVIDENCE,
+                    None,
                 )
             return (
                 DecisionAction.FLAG,
                 "FLAGGED — Unverifiable: no matching source in knowledge base.",
+                HallucinationType.NO_EVIDENCE,
+                None,
             )
 
         # ---- PARTIALLY SUPPORTED -----------------------------------------
@@ -114,6 +135,8 @@ class DecisionEngine:
                     f"FLAGGED — Only partially supported (confidence {confidence:.2f}): "
                     f"{vc.verification_reasoning[:120]}"
                 ),
+                HallucinationType.MISLEADING,
+                None,
             )
 
         # ---- VERIFIED — apply domain-specific thresholds ----
@@ -121,6 +144,8 @@ class DecisionEngine:
             return (
                 DecisionAction.BLOCK,
                 f"BLOCKED — {category} claim below block threshold {block_threshold:.2f} (confidence {confidence:.2f})",
+                HallucinationType.NO_EVIDENCE,
+                None,
             )
 
         if confidence < flag_threshold:
@@ -130,6 +155,8 @@ class DecisionEngine:
                     f"FLAGGED — Low confidence ({confidence:.2f}, {category} threshold {flag_threshold:.2f}): "
                     f"{vc.verification_reasoning[:120]}"
                 ),
+                HallucinationType.NO_EVIDENCE,
+                None,
             )
 
         # ---- Fully verified -----------------------------------------------
@@ -138,9 +165,11 @@ class DecisionEngine:
             return (
                 DecisionAction.ANNOTATE,
                 f"VERIFIED (confidence {confidence:.2f}, {category}) — Source: {sources}",
+                HallucinationType.CORRECT,
+                None,
             )
 
-        return (DecisionAction.PASS, "")
+        return (DecisionAction.PASS, "", HallucinationType.CORRECT, None)
 
     # ------------------------------------------------------------------
     # Cross-claim consistency check

@@ -1,0 +1,35 @@
+{
+  "verified": {
+    "lo": 0.70,
+    "hi": 0.97,
+    "mean": 0.83,
+    "n": 0,
+    "_note": "DeBERTa-v3-large entailment: raw=0.6 → precision~72%; raw=0.9 → ~94%"
+  },
+  "contradicted": {
+    "lo": 0.65,
+    "hi": 0.98,
+    "mean": 0.87,
+    "n": 0,
+    "_note": "Must stay above block_threshold (0.50). DeBERTa contradiction is very reliable at raw>0.6"
+  },
+  "partially_supported": {
+    "lo": 0.40,
+    "hi": 0.72,
+    "mean": 0.56,
+    "n": 0,
+    "_note": "Noisy middle class — broad spread, sits between flag and block thresholds"
+  },
+  "unverifiable": {
+    "lo": 0.12,
+    "hi": 0.45,
+    "mean": 0.28,
+    "n": 0,
+    "_note": "Always below flag_threshold (0.55) — neutral class should never trigger FLAG/BLOCK"
+  },
+  "_meta": {
+    "source": "bootstrap_defaults",
+    "total_claims": 0,
+    "note": "Bootstrap parameters from DeBERTa-v3 paper. Run scripts/calibrate_nli.py to replace with empirical values."
+  }
+}

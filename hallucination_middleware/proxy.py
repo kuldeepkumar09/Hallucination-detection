@@ -362,6 +362,56 @@ async def health() -> JSONResponse:
     })
 
 
+@app.get("/status")
+async def system_status() -> JSONResponse:
+    """
+    Lightweight status endpoint — returns current configuration, enabled features,
+    rate limit settings, and recent performance stats. No auth required.
+    """
+    s = get_settings()
+    audit_stats = _audit_().get_stats()
+    avg_ms = audit_stats.get("avg_processing_time_ms", None)
+    return JSONResponse({
+        "version": "4.0",
+        "provider": {
+            "primary": s.llm_provider,
+            "fallback_enabled": s.fallback_enabled,
+            "extractor_model": s.extractor_model,
+            "verifier_model": s.verifier_model,
+        },
+        "thresholds": {
+            "block": s.block_threshold,
+            "flag": s.flag_threshold,
+            "domains": {
+                "MEDICAL":   {"block": s.domain_block_thresholds.get("MEDICAL"),   "flag": s.domain_flag_thresholds.get("MEDICAL")},
+                "LEGAL":     {"block": s.domain_block_thresholds.get("LEGAL"),     "flag": s.domain_flag_thresholds.get("LEGAL")},
+                "FINANCIAL": {"block": s.domain_block_thresholds.get("FINANCIAL"), "flag": s.domain_flag_thresholds.get("FINANCIAL")},
+            },
+        },
+        "features": {
+            "nli":              s.nli_enabled,
+            "reranker":         s.reranker_enabled,
+            "hmm":              s.hmm_enabled,
+            "mpc":              s.mpc_enabled,
+            "self_correction":  s.self_correction_enabled,
+            "hyde":             s.hyde_enabled,
+            "coref":            s.coref_enabled,
+            "cache":            s.cache_enabled,
+            "streaming":        s.streaming_enabled,
+        },
+        "rate_limiting": {
+            "enabled":  s.rate_limit_enabled,
+            "requests": s.rate_limit_requests,
+            "window_s": s.rate_limit_window,
+        },
+        "performance": {
+            "avg_processing_ms": round(avg_ms, 1) if avg_ms else None,
+            "total_requests":    audit_stats.get("total_requests", 0),
+            "cache_hit_rate":    audit_stats.get("cache_hit_rate", None),
+        },
+    })
+
+
 @app.get("/audit/recent")
 async def recent_audit(n: int = 10) -> JSONResponse:
     entries = _audit_().read_recent(n)
@@ -479,11 +529,15 @@ async def evaluate_pipeline(request: Request) -> JSONResponse:
         except (ValueError, TypeError):
             max_claims = None
     adversarial = bool(body.get("adversarial", False))
+    domain = body.get("domain", None)  # "MEDICAL" | "LEGAL" | "FINANCIAL" | "ALL_DOMAINS"
+    if domain and domain not in {"MEDICAL", "LEGAL", "FINANCIAL", "ALL_DOMAINS"}:
+        domain = None
 
     from .evaluation import evaluate_accuracy  # noqa: PLC0415
-    result = await evaluate_accuracy(_pipeline_(), max_claims=max_claims, adversarial=adversarial)
+    result = await evaluate_accuracy(_pipeline_(), max_claims=max_claims, adversarial=adversarial, domain=domain)
+    benchmark_label = domain.lower() if domain else ("adversarial" if adversarial else "standard")
     return JSONResponse({
-        "benchmark": "adversarial" if adversarial else "standard",
+        "benchmark": benchmark_label,
         "total_claims": result.total,
         "precision": round(result.precision, 4),
         "recall": round(result.recall, 4),
@@ -543,6 +597,7 @@ async def evaluate_llm_pipeline(request: Request) -> JSONResponse:
 @app.post("/verify", dependencies=[Depends(verify_api_key)])
 async def verify_text(request: Request) -> JSONResponse:
     """Verify arbitrary text through the full hallucination detection pipeline."""
+    import time as _time
     await _check_rate_limit(request)
     try:
         body = await request.json()
@@ -553,14 +608,31 @@ async def verify_text(request: Request) -> JSONResponse:
     if not text.strip():
         raise HTTPException(400, "text field is required and must not be empty")
     _validate_text_length(text)
+
+    # Fast path: very short inputs (< 30 chars) cannot contain verifiable claims
+    if len(text.strip()) < 30:
+        from .models import HallucinationAudit
+        audit = HallucinationAudit(model=model, original_text=text)
+        audit.finalize(original_text=text, processing_time_ms=0.0)
+        return JSONResponse(
+            {"total_claims": 0, "claims": [], "original_text": text,
+             "annotated_text": text, "corrected_text": None,
+             "overall_confidence": 1.0, "response_blocked": False,
+             "processing_time_ms": 0.0, "request_id": audit.request_id},
+            headers={"X-Processing-Time-Ms": "0"},
+        )
+
+    t0 = _time.monotonic()
     audit = await _pipeline_().process(text, model=model)
+    elapsed_ms = round((_time.monotonic() - t0) * 1000, 1)
+
     stub = {"id": audit.request_id, "content": [{"type": "text", "text": text}], "model": model}
     result = _inject_audit(stub, audit)
     payload = result["hallucination_audit"]
     payload["annotated_text"] = audit.annotated_text
     payload["original_text"] = audit.original_text
     payload["corrected_text"] = audit.corrected_text
-    return JSONResponse(payload)
+    return JSONResponse(payload, headers={"X-Processing-Time-Ms": str(elapsed_ms)})
 
 
 # ---------------------------------------------------------------------------
@@ -1244,7 +1316,13 @@ def _inject_audit(resp: Dict[str, Any], audit: Any) -> Dict[str, Any]:
                 "annotation": d.annotation,
                 "reasoning": d.verified_claim.verification_reasoning,
                 "key_evidence": (d.verified_claim.key_evidence or "")[:300],
+                "hallucination_type": d.hallucination_type.value,
+                "correct_info": d.correct_info,
                 "sources": [s.source for s in d.verified_claim.supporting_docs[:3]],
+                "source_urls": [
+                    s.source for s in d.verified_claim.supporting_docs[:5]
+                    if isinstance(s.source, str) and s.source.startswith("http")
+                ],
                 "rerank_scores": [
                     s.rerank_score for s in d.verified_claim.supporting_docs[:3]
                     if s.rerank_score is not None

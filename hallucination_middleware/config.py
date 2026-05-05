@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     ollama_num_parallel: int = 1
     ollama_max_loaded_models: int = 1
     ollama_num_ctx: int = 4096
+    # Local model used when Ollama is auto-detected and primary provider is remote.
+    # RTX 3050 (4 GB VRAM): llama3.1:8b fits comfortably, ~1.5–2 s inference.
+    ollama_verifier_model: str = "llama3.1:8b"
+    # When True, ALL stakes (including critical/high) route to local Ollama when available.
+    # Trade-off: 8B accuracy vs 70B accuracy. Default False keeps 70B for critical.
+    ollama_for_critical: bool = False
 
     # ---- Anthropic API (optional, only needed if llm_provider=anthropic) ----
     anthropic_api_key: str = ""
@@ -193,8 +199,19 @@ class Settings(BaseSettings):
 
     # ---- DeBERTa-v3 NLI scorer ----
     nli_enabled: bool = True
-    nli_model: str = "cross-encoder/nli-deberta-v3-small"
+    nli_model: str = "cross-encoder/nli-deberta-v3-large"
     nli_confidence_threshold: float = 0.65   # Use NLI result when confidence > this
+
+    # ---- Fast / NLI-only mode — sub-5-second latency path ----
+    # When nli_only_mode=True the pipeline skips LLM verification entirely.
+    # Verification is done purely by DeBERTa-v3 NLI + web retrieval.
+    # Expected latency: 2–4 s (Tavily 1–2 s + NLI 0.1 s on GPU / 0.5 s on CPU).
+    # Trade-off: lower accuracy on nuanced claims; higher accuracy on clear-cut facts.
+    # Recommended for: high-throughput use cases, UI streaming demos, batch processing.
+    nli_only_mode: bool = False
+    # fast_mode is a shortcut that sets nli_only_mode=True AND disables
+    # self_correction + mpc + hyde to eliminate all LLM round-trips.
+    fast_mode: bool = False
 
     # ---- HMM reliability tracker ----
     hmm_enabled: bool = True

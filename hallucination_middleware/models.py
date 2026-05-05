@@ -48,6 +48,14 @@ class DecisionAction(str, Enum):
     BLOCK = "block"
 
 
+class HallucinationType(str, Enum):
+    FACTUAL_ERROR = "factual_error"      # Claim contradicted by evidence
+    OUTDATED_INFO = "outdated_info"      # Info was once correct but is now stale
+    MISLEADING = "misleading"            # Partially supported — cherry-picked or distorted
+    NO_EVIDENCE = "no_evidence"          # Cannot verify — no authoritative source found
+    CORRECT = "correct"                  # Fully verified against authoritative sources
+
+
 # ---------------------------------------------------------------------------
 # Extraction
 # ---------------------------------------------------------------------------
@@ -107,6 +115,8 @@ class ClaimDecision(BaseModel):
     verified_claim: VerifiedClaim
     action: DecisionAction
     annotation: str = ""
+    hallucination_type: HallucinationType = HallucinationType.NO_EVIDENCE
+    correct_info: Optional[str] = None
 
     @property
     def category(self) -> str:
