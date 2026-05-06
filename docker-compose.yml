@@ -27,7 +27,8 @@ services:
       - CHROMA_DB_PATH=/data/chroma_db
       - REDIS_URL=redis://redis:6379
       - RATE_LIMIT_REDIS_ENABLED=true
-      # host.docker.internal resolves to the Windows host — reaches Ollama running on your PC
+      - LLM_PROVIDER=ollama
+      # host.docker.internal resolves to the Windows/Mac host — reaches Ollama on your PC
       - OLLAMA_BASE_URL=http://host.docker.internal:11434/v1
     volumes:
       - chroma_data:/data/chroma_db

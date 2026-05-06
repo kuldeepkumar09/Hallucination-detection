@@ -2,15 +2,14 @@
 #
 # Uses the slim image (CPU-only PyTorch, ~3-4 GB).
 # No GPU required — works on any cloud VM or local machine.
+# Zero paid API keys needed — uses Ollama + Wikipedia + DuckDuckGo.
 #
 # Usage:
-#   cp .env.example .env          # fill in API keys
+#   cp .env.free .env
 #   docker compose -f docker-compose.slim.yml up -d
 #
-# Recommended .env overrides for CPU deployment (copy these into your .env):
-#   NLI_ONLY_MODE=true
-#   FAST_MODE=true
-#   RERANKER_ENABLED=false
+# Ollama must be running on the host with: ollama pull llama3.1:8b
+# NLI runs on CPU (~0.5 s/claim); FAST_MODE=true disables LLM for sub-4s latency.
 
 services:
 
@@ -29,7 +28,10 @@ services:
       - AUDIT_LOG_PATH=/data/audit_trail.jsonl
       - CHROMA_DB_PATH=/data/chroma_db
       - REDIS_URL=redis://redis:6379
-      # CPU deployment: enable fast mode for acceptable latency
+      - LLM_PROVIDER=ollama
+      # host.docker.internal resolves to the Windows/Mac host — reaches Ollama on your PC
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434/v1
+      # CPU deployment: fast mode keeps latency under 4 s (NLI-only, no LLM round-trip)
       - NLI_ONLY_MODE=true
       - FAST_MODE=true
       - RERANKER_ENABLED=false

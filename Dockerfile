@@ -41,7 +41,7 @@ RUN grep -v "^torch" requirements.txt > requirements-notorch.txt \
     && python -m spacy download en_core_web_sm \
     && python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')" \
     && python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')" \
-    && python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/nli-deberta-v3-small')"
+    && python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/nli-deberta-v3-large')"
 
 # Block HuggingFace network at runtime — models already baked in
 ENV HF_HUB_OFFLINE=1
@@ -49,6 +49,7 @@ ENV TRANSFORMERS_OFFLINE=1
 
 # Application code
 COPY hallucination_middleware/ ./hallucination_middleware/
+COPY scripts/ ./scripts/
 COPY run_proxy.py ./
 
 # Built frontend from Stage 1

@@ -33,7 +33,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # ── Stage 2: Python slim runtime (CPU-only) ───────────────────────────────────
-FROM python:3.11-slim AS runtime
+FROM python:3.13-slim AS runtime
 WORKDIR /app
 
 # System dependencies — minimal set only
@@ -70,6 +70,7 @@ ENV TRANSFORMERS_OFFLINE=1
 
 # Application code
 COPY hallucination_middleware/ ./hallucination_middleware/
+COPY scripts/ ./scripts/
 COPY run_proxy.py ./
 
 # Built frontend from Stage 1

@@ -1,7 +1,7 @@
 # ── HalluCheck v4 — Production deployment using pre-built Docker Hub image ────
 #
 # Usage:
-#   cp .env.example .env          # fill in your API keys
+#   cp .env.free .env             # zero paid keys required
 #   docker compose -f docker-compose.prod.yml up -d
 #
 # This file pulls the pre-built image from Docker Hub — no local build needed.
@@ -9,7 +9,7 @@
 #
 # Requirements:
 #   - Docker Desktop with GPU support (NVIDIA Container Toolkit)
-#   - .env file with API keys (copy from .env.example)
+#   - Ollama running on host with: ollama pull llama3.1:8b
 
 services:
 
@@ -26,6 +26,9 @@ services:
       - AUDIT_LOG_PATH=/data/audit_trail.jsonl
       - CHROMA_DB_PATH=/data/chroma_db
       - REDIS_URL=redis://redis:6379
+      - LLM_PROVIDER=ollama
+      # host.docker.internal resolves to the Windows/Mac host — reaches Ollama on your PC
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434/v1
     volumes:
       - chroma_data:/data/chroma_db
       - audit_data:/data
