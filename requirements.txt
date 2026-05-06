@@ -43,7 +43,8 @@ typer>=0.12.0
 # Wikipedia ingestion (free, no API key)
 wikipedia-api>=0.6.0
 
-# Live web search — Tavily (AI-optimized, needs free API key from tavily.com)
+# Live web search — Tavily (AI-optimized, OPTIONAL — needs paid API key)
+# Leave TAVILY_API_KEY blank to skip; Wikipedia + DuckDuckGo used automatically
 tavily-python>=0.3.0
 
 # Live web search — DuckDuckGo fallback (completely free, no API key)
@@ -55,8 +56,8 @@ spacy==3.7.5
 thinc==8.2.5
 # After installing: python -m spacy download en_core_web_sm
 
-# Anthropic SDK (required when LLM_PROVIDER=anthropic)
-anthropic>=0.40.0
+# Anthropic SDK (OPTIONAL — only needed when LLM_PROVIDER=anthropic)
+# anthropic>=0.40.0
 
 # ---- GPU acceleration (auto-detected at runtime) ----
 # sentence-transformers and ChromaDB embeddings use GPU when torch+CUDA available.

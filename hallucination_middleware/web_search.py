@@ -1,9 +1,13 @@
 """
-Web Search Verifier — Tavily (primary) + DuckDuckGo (free fallback).
+Web Search Verifier — three-tier free evidence pipeline.
 
 Priority:
-  1. Tavily  — if TAVILY_API_KEY is set  (AI-optimized, clean results)
-  2. DuckDuckGo — no API key required    (free fallback, always available)
+  1. Tavily      — if TAVILY_API_KEY is set  (AI-optimized, paid optional)
+  2. Wikipedia   — free REST API, no key, high-credibility encyclopedic content
+  3. DuckDuckGo  — no API key required, broad web coverage
+
+Wikipedia is the default free primary source; DuckDuckGo is the broad-web fallback.
+No API key is ever required for Wikipedia or DuckDuckGo.
 
 Improvements:
   - Retry logic with exponential backoff for rate limiting
@@ -110,6 +114,68 @@ def _search_tavily(query: str, max_results: int = 3) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Wikipedia search — free REST API, no key required
+# ---------------------------------------------------------------------------
+
+def _search_wikipedia_structured(query: str, max_results: int = 3) -> List[Dict]:
+    """Wikipedia API search — completely free, no API key, high-credibility source."""
+    import json
+    import urllib.parse
+    import urllib.request
+
+    try:
+        params = urllib.parse.urlencode({
+            "action": "query",
+            "list": "search",
+            "srsearch": query,
+            "srlimit": max_results,
+            "utf8": 1,
+            "format": "json",
+            "origin": "*",
+        })
+        url = f"https://en.wikipedia.org/w/api.php?{params}"
+        req = urllib.request.Request(url, headers={"User-Agent": "HalluCheck/4.0 (hallucination-detection)"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+        results = []
+        for item in data.get("query", {}).get("search", []):
+            title = item.get("title", "")
+            snippet = item.get("snippet", "")
+            # Strip HTML highlight tags Wikipedia adds to snippets
+            import re
+            snippet = re.sub(r"<[^>]+>", "", snippet)
+            page_url = "https://en.wikipedia.org/wiki/" + urllib.parse.quote(title.replace(" ", "_"))
+            results.append({
+                "doc_id": f"web-wiki-{item.get('pageid', abs(hash(title)) % 10**8)}",
+                "source": page_url,
+                "excerpt": snippet[:450],
+                "relevance_score": 0.65,  # Wikipedia is Tier-1 credibility
+                "title": title,
+                "provider": "Wikipedia",
+            })
+        logger.debug("[Wikipedia] %d results for: %s", len(results), query[:60])
+        return results
+    except Exception as exc:
+        logger.debug("[Wikipedia] Search failed: %s", exc)
+        return []
+
+
+def _search_wikipedia(query: str, max_results: int = 3) -> Optional[str]:
+    results = _search_wikipedia_structured(query, max_results)
+    if not results:
+        return None
+    parts = []
+    for r in results:
+        parts.append(
+            f"[Wikipedia] Source: {r['source']}\n"
+            f"Title: {r['title']}\n"
+            f"Snippet: {r['excerpt']}"
+        )
+    return "\n\n".join(parts) or None
+
+
+# ---------------------------------------------------------------------------
 # DuckDuckGo search — with retry + timeout
 # ---------------------------------------------------------------------------
 
@@ -192,10 +258,14 @@ def _search_duckduckgo(query: str, max_results: int = 3) -> Optional[str]:
 
 def web_search_evidence(query: str, max_results: int = 3) -> str:
     """
-    Synchronous web search: tries Tavily first, falls back to DuckDuckGo.
-    Returns formatted evidence text (empty string if both fail).
+    Synchronous web search: Tavily (paid, optional) → Wikipedia (free) → DuckDuckGo (free).
+    Returns formatted evidence text (empty string if all fail).
     """
     result = _search_tavily(query, max_results=max_results)
+    if result:
+        return result
+
+    result = _search_wikipedia(query, max_results=max_results)
     if result:
         return result
 
@@ -222,11 +292,14 @@ async def web_search_batch_async(queries: List[str], max_results: int = 3) -> Li
 
 def web_search_structured_sync(query: str, max_results: int = 3) -> List[Dict]:
     """
-    Structured web search: tries Tavily first, falls back to DuckDuckGo.
+    Structured web search: Tavily (paid, optional) → Wikipedia (free) → DuckDuckGo (free).
     Returns list of dicts compatible with KB query results.
-    Never raises — returns [] if both providers fail.
+    Never raises — returns [] if all providers fail.
     """
     results = _search_tavily_structured(query, max_results)
+    if results:
+        return results
+    results = _search_wikipedia_structured(query, max_results)
     if results:
         return results
     return _search_duckduckgo_structured(query, max_results)
