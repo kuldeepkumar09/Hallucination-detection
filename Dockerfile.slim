@@ -48,8 +48,9 @@ ENV HF_HUB_OFFLINE=0
 ENV TRANSFORMERS_OFFLINE=0
 
 # Install CPU-only PyTorch first (avoids pip pulling CUDA wheels later)
+# torch==2.2.2 has no cp313 wheel; 2.5.0+ added Python 3.13 CPU support
 RUN pip install --no-cache-dir \
-    torch==2.2.2 \
+    "torch>=2.5.0" \
     --index-url https://download.pytorch.org/whl/cpu
 
 # All remaining dependencies (torch excluded to avoid overwrite)
