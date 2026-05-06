@@ -51,9 +51,8 @@ tavily-python>=0.3.0
 ddgs>=9.0.0
 
 # NLP — SpaCy entity extraction
-# 3.7.5 — pydantic v2 compatible; coreferee dropped (requires spacy<3.6/pydantic v1)
-spacy==3.7.5
-thinc==8.2.5
+# 3.8+ has pre-built Python 3.13 wheels on Windows; coreferee dropped (requires spacy<3.6)
+spacy>=3.8.4
 # After installing: python -m spacy download en_core_web_sm
 
 # Anthropic SDK (OPTIONAL — only needed when LLM_PROVIDER=anthropic)

@@ -39,9 +39,9 @@ ddgs>=9.0.0
 # Wikipedia KB auto-seed
 wikipedia-api>=0.6.0
 
-# NLP
-spacy==3.7.5
-thinc==8.2.5
+# NLP — spacy 3.8+ has pre-built wheels for Python 3.13 on Windows
+# (3.7.5 required blis to compile from source, which needs clang/LLVM)
+spacy>=3.8.4
 
 # Cache (optional — in-memory fallback if Redis not running)
 redis>=5.0.0
