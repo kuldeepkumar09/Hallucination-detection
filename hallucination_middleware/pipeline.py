@@ -150,6 +150,7 @@ class HallucinationDetectionPipeline:
                 except Exception:
                     pass
 
+        _audit_logged = False
         try:
             # ── Stage 1: Extract claims ──────────────────────────────────────
             logger.info("[%s] Extracting claims (%d chars) …", audit.request_id, len(text))
@@ -313,7 +314,6 @@ class HallucinationDetectionPipeline:
                 except Exception as mpc_exc:
                     logger.warning("[%s] MPC failed: %s", audit.request_id, mpc_exc)
 
-            _audit_logged = False
             self._audit.log(audit)
             _audit_logged = True
 

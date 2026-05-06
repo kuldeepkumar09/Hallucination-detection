@@ -219,7 +219,7 @@ class SelfCorrector:
         for attempt in range(3):
             try:
                 response = await self._client.chat.completions.create(
-                    model=s.extractor_model,
+                    model=s.verifier_model,  # correction needs the larger capable model
                     messages=[
                         {"role": "system", "content": CORRECTION_SYSTEM},
                         {"role": "user", "content": prompt},
@@ -244,7 +244,7 @@ class SelfCorrector:
         for attempt in range(3):
             try:
                 response = await self._anthropic_client.messages.create(
-                    model=s.extractor_model,
+                    model=s.ensemble_model,  # use Claude model name (not Ollama model name)
                     max_tokens=4096,
                     system=CORRECTION_SYSTEM,
                     messages=[{"role": "user", "content": prompt}],

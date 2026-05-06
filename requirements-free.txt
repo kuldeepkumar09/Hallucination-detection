@@ -50,8 +50,8 @@ redis>=5.0.0
 hmmlearn>=0.3.0
 numpy>=1.26.0
 
-# GPU monitoring
-pynvml>=11.5.0
+# GPU monitoring — nvidia-ml-py replaces deprecated pynvml (same API, same import name)
+nvidia-ml-py>=12.535.77
 
 # Environment / runtime
 python-dotenv>=1.0.0

@@ -10,10 +10,17 @@ GPU_VRAM_LIMIT_MB = 3500   # Leave 596 MB headroom for OS + driver
 
 def get_vram_usage_mb() -> Optional[float]:
     try:
-        import pynvml
-        pynvml.nvmlInit()
-        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-        info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        # nvidia-ml-py exposes the same pynvml module name; use it directly
+        try:
+            from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo  # nvidia-ml-py
+        except ImportError:
+            import pynvml as _p  # type: ignore[import]
+            nvmlInit = _p.nvmlInit
+            nvmlDeviceGetHandleByIndex = _p.nvmlDeviceGetHandleByIndex
+            nvmlDeviceGetMemoryInfo = _p.nvmlDeviceGetMemoryInfo
+        nvmlInit()
+        handle = nvmlDeviceGetHandleByIndex(0)
+        info = nvmlDeviceGetMemoryInfo(handle)
         return info.used / 1024 / 1024
     except Exception:
         return None

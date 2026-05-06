@@ -554,6 +554,6 @@ class WebOnlyKB:
         return {
             "mode": "web-only",
             "total_documents": 0,
-            "sources": "Tavily (primary) + DuckDuckGo (fallback)",
+            "sources": "Tavily (optional paid) → Wikipedia (free) → DuckDuckGo (free)",
             "local_storage": "disabled",
         }

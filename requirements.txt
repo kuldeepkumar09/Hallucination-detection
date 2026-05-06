@@ -69,8 +69,8 @@ torch>=2.1.0
 hmmlearn>=0.3.0
 numpy>=1.26.0
 
-# VRAM monitoring (RTX 3050 hardware guard)
-pynvml>=11.5.0
+# VRAM monitoring (RTX 3050 hardware guard) — nvidia-ml-py replaces deprecated pynvml
+nvidia-ml-py>=12.535.77
 
 # SEC EDGAR financial ingestion (optional — graceful fallback if absent)
 # edgartools>=5.30
